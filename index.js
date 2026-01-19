@@ -13,7 +13,7 @@ let activeProcess = null;
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
-client.on('ready', () => console.log(`Bot online! Screenshot feature ready.`));
+client.on('ready', () => console.log(`🚀 Renzu Terminal Online! Debugging enabled.`));
 
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
@@ -22,39 +22,55 @@ client.on('messageCreate', async (message) => {
     // --- SCREENSHOT COMMAND ---
     if (msg.toLowerCase().startsWith('?screenshot')) {
         const url = msg.split(' ')[1];
-        if (!url) return message.reply("URL toh de bhai!");
+        if (!url) return message.reply("❌ URL missing! Example: `?screenshot google.com` ");
 
-        const waitMsg = await message.reply("📸 Capturing... (Cloud pe thoda time lagta hai)");
+        const waitMsg = await message.reply("📸 Opening headless browser...");
         let browser;
 
         try {
             browser = await puppeteer.launch({
-                executablePath: '/usr/bin/google-chrome', // Agar custom path chahiye ho
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+                // Railway/Docker ke liye default chromium use karna best hai
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
             });
+            
             const page = await browser.newPage();
             await page.setViewport({ width: 1280, height: 720 });
-            await page.goto(url.startsWith('http') ? url : `https://${url}`, { waitUntil: 'networkidle2', timeout: 60000 });
             
-            const path = `${PUBLIC_DIR}/screen.png`;
+            console.log(`Navigating to: ${url}`);
+            await page.goto(url.startsWith('http') ? url : `https://${url}`, { 
+                waitUntil: 'networkidle2', 
+                timeout: 60000 
+            });
+            
+            const path = `${PUBLIC_DIR}/screen_${Date.now()}.png`; // Unique filename to avoid cache issues
             await page.screenshot({ path });
             
             const file = new AttachmentBuilder(path);
-            await message.reply({ files: [file] });
+            await message.reply({ content: `✅ Result for: ${url}`, files: [file] });
+            
+            // Clean up file after sending
+            setTimeout(() => fs.unlinkSync(path), 5000);
             waitMsg.delete().catch(() => {});
+
         } catch (err) {
-            console.error(err);
-            waitMsg.edit(`❌ Error: ${err.message.split('\n')[0]}`);
+            console.error("SCREENSHOT ERROR:", err);
+            // Discord par detailed error bhej raha hai
+            const errorReport = `❌ **Screenshot Failed!**\n\`\`\`js\n${err.message}\n\`\`\`\n*Check console for full stack trace.*`;
+            waitMsg.edit(errorReport);
         } finally {
-            if (browser) await browser.close(); // Zombie process preventer
+            if (browser) await browser.close();
         }
         return;
     }
 
     // --- SMART INPUT ---
     if (activeProcess && !msg.startsWith('!') && !msg.startsWith('?')) {
-        activeProcess.stdin.write(msg + '\n');
-        return message.react('📥').catch(() => {});
+        try {
+            activeProcess.stdin.write(msg + '\n');
+            return message.react('📥');
+        } catch (err) {
+            message.reply(`❌ Input Error: ${err.message}`);
+        }
     }
 
     // --- TERMINAL EXECUTION ---
@@ -63,23 +79,35 @@ client.on('messageCreate', async (message) => {
         if (activeProcess) activeProcess.kill();
 
         const live = await message.reply("⚡ Executing...");
-        activeProcess = spawn('/bin/bash', ['-c', cmd], { cwd: PUBLIC_DIR, env: { ...process.env, TERM: 'xterm' } });
+        
+        activeProcess = spawn('/bin/bash', ['-c', cmd], { 
+            cwd: PUBLIC_DIR, 
+            env: { ...process.env, TERM: 'xterm' } 
+        });
 
         let buffer = "";
         const interval = setInterval(() => {
-            if (buffer.trim()) live.edit(`\`\`\`\n${stripAnsi(buffer).slice(-1900)}\n\`\`\``).catch(() => {});
+            if (buffer.trim()) {
+                const clean = stripAnsi(buffer).slice(-1900);
+                live.edit(`\`\`\`\n${clean}\n\`\`\``).catch(() => {});
+            }
         }, 2500);
 
         activeProcess.stdout.on('data', (d) => buffer += d);
         activeProcess.stderr.on('data', (d) => buffer += d);
+
+        activeProcess.on('error', (err) => {
+            message.reply(`❌ **Failed to start process:** ${err.message}`);
+        });
+
         activeProcess.on('close', (c) => {
             clearInterval(interval);
             activeProcess = null;
-            message.channel.send(`✅ Done (Code: ${c})`);
+            message.channel.send(`✅ **Command Finished** (Exit Code: ${c})`);
         });
     }
 
-    // --- SYSTEM COMMANDS ---
+    // --- STATUS & STOP ---
     if (msg === '?status') {
         exec('df -h /app/storage', (e, out) => {
             const s = out ? out.split('\n')[1].replace(/\s+/g, ' ').split(' ') : ["N/A","N/A","0%"];
@@ -88,8 +116,12 @@ client.on('messageCreate', async (message) => {
     }
 
     if (msg === '?stop') {
-        if (activeProcess) { activeProcess.kill('SIGKILL'); activeProcess = null; return message.reply("🛑 Stopped."); }
-        message.reply("Kuch nahi chal raha.");
+        if (activeProcess) { 
+            activeProcess.kill('SIGKILL'); 
+            activeProcess = null; 
+            return message.reply("🛑 Process killed forcefully."); 
+        }
+        message.reply("Bhai, filhal koi process active nahi hai.");
     }
 });
 
