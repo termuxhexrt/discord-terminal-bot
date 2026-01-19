@@ -15,7 +15,7 @@ let activeProcess = null, currentBrowser = null, currentPage = null;
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
-// --- IP FETCH (BUILT-IN) ---
+// --- IP FETCH ---
 function getPublicIP() {
     return new Promise((resolve) => {
         https.get('https://api.ipify.org', (res) => {
@@ -26,7 +26,7 @@ function getPublicIP() {
     });
 }
 
-// --- SMART LABELS LOGIC ---
+// --- SMART TAGS (Identifying Clickable Elements) ---
 async function applySmartTags(page) {
     await page.evaluate(() => {
         document.querySelectorAll('.renzu-tag').forEach(el => el.remove());
@@ -59,15 +59,9 @@ async function applySmartTags(page) {
 async function captureAndSend(message, url = null, interaction = null) {
     try {
         if (!currentBrowser) {
-            // RAILWAY FIXED: Using Chromium path directly
             currentBrowser = await puppeteer.launch({ 
-                executablePath: '/usr/bin/chromium',
-                args: [
-                    '--no-sandbox', 
-                    '--disable-setuid-sandbox', 
-                    '--disable-dev-shm-usage', 
-                    '--disable-gpu'
-                ] 
+                executablePath: '/usr/bin/chromium', // EXACT PATH FROM DOCKER
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] 
             });
             currentPage = await currentBrowser.newPage();
             await currentPage.setViewport({ width: 1280, height: 720 });
@@ -91,7 +85,7 @@ async function captureAndSend(message, url = null, interaction = null) {
         );
 
         const payload = { 
-            content: "🏷️ **Labeled Control Active**", 
+            content: "🏷️ **Renzu Smart Interface**", 
             files: [new AttachmentBuilder(path)], 
             components: [row] 
         };
@@ -102,9 +96,7 @@ async function captureAndSend(message, url = null, interaction = null) {
         if (fs.existsSync(path)) setTimeout(() => fs.unlinkSync(path), 5000);
     } catch (err) { 
         console.error("Capture Error:", err);
-        const errorMsg = "❌ Browser Error: Make sure Chromium is installed in Docker.";
-        if (interaction) await interaction.followUp(errorMsg);
-        else if (message) await message.reply(errorMsg);
+        if (message) message.reply(`❌ Error: ${err.message}`);
     }
 }
 
@@ -126,19 +118,19 @@ client.on('messageCreate', async (message) => {
                 { name: '🌐 Server IP', value: `\`${ip}\``, inline: true },
                 { name: '🌐 Browser', value: currentBrowser ? '🟢 Active' : '🔴 Closed', inline: true },
                 { name: '🐚 Terminal', value: activeProcess ? '🟡 Busy' : '🟢 Idle', inline: true },
-                { name: '💾 RAM Usage', value: `${freeMem}GB / ${totalMem}GB Free`, inline: true },
+                { name: '💾 RAM Usage', value: `${freeMem}GB / ${totalMem}GB`, inline: true },
                 { name: '⏱️ Uptime', value: `${uptime}s`, inline: true },
-                { name: '📍 Current URL', value: currentPage ? await currentPage.url() : 'None', inline: false }
+                { name: '📍 URL', value: currentPage ? (await currentPage.url()) : 'None', inline: false }
             )
             .setTimestamp();
 
         return message.reply({ embeds: [embed] });
     }
 
+    // BROWSER CONTROL
     if (currentPage && !msg.startsWith('!') && !msg.startsWith('?')) {
         if (msg.toLowerCase() === 'back') {
             await currentPage.goBack();
-            await message.react('⬅️');
             return setTimeout(() => captureAndSend(message), 1000);
         }
 
@@ -150,21 +142,20 @@ client.on('messageCreate', async (message) => {
 
             if (coords) {
                 await currentPage.mouse.click(coords.x, coords.y);
-                await message.react('🎯');
                 return setTimeout(() => captureAndSend(message), 1200);
             }
         }
         await currentPage.keyboard.type(msg);
-        await message.react('⌨️');
         return setTimeout(() => captureAndSend(message), 800);
     }
 
     if (msg.toLowerCase().startsWith('?screenshot')) {
-        await message.react('🌐');
         const url = msg.split(' ')[1];
+        if(!url) return message.reply("URL toh de! Example: `?screenshot google.com` ");
         await captureAndSend(message, url);
     }
 
+    // TERMINAL COMMANDS
     if (msg.startsWith('!')) {
         const cmd = msg.slice(1);
         if (activeProcess) activeProcess.kill();
