@@ -1,12 +1,14 @@
 {
-  "name": "real-terminal-bot",
+  "name": "discord-terminal-bot",
   "version": "1.0.0",
+  "description": "Discord Terminal with Google Drive Storage",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "discord.js": "^14.13.0",
-    "dotenv": "^16.3.1"
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.3.1",
+    "googleapis": "^105.0.0"
   }
 }
