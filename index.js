@@ -1,7 +1,9 @@
-const { Client, GatewayIntentBits, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const puppeteer = require('puppeteer');
+const os = require('os');
+const axios = require('axios'); // IP fetch ke liye
 require('dotenv').config();
 
 const client = new Client({
@@ -13,11 +15,10 @@ let activeProcess = null, currentBrowser = null, currentPage = null;
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
-// --- THE ULTIMATE FIX: NUMBER + TEXT LABELS ---
+// --- SMART LABELS LOGIC ---
 async function applySmartTags(page) {
     await page.evaluate(() => {
         document.querySelectorAll('.renzu-tag').forEach(el => el.remove());
-        
         const selectors = 'button, input, a, [role="button"], textarea, select';
         const elements = Array.from(document.querySelectorAll(selectors)).filter(el => {
             const rect = el.getBoundingClientRect();
@@ -25,27 +26,20 @@ async function applySmartTags(page) {
         });
 
         window.renzuElements = []; 
-
         elements.forEach((el, index) => {
             const rect = el.getBoundingClientRect();
             const id = index + 1;
-            
-            // Get label text (inner text or placeholder or aria-label)
             let labelText = el.innerText || el.placeholder || el.getAttribute('aria-label') || el.value || "";
-            labelText = labelText.trim().substring(0, 15); // Shorten long text
+            labelText = labelText.trim().substring(0, 15);
             
             const tag = document.createElement('div');
             tag.className = 'renzu-tag';
-            tag.style = `
-                position: absolute; left: ${rect.left + window.scrollX}px; top: ${rect.top + window.scrollY}px;
+            tag.style = `position: absolute; left: ${rect.left + window.scrollX}px; top: ${rect.top + window.scrollY}px;
                 background: #FFD700; color: black; font-weight: bold; border: 2px solid black;
                 padding: 1px 4px; z-index: 2147483647; font-size: 11px; border-radius: 3px;
-                pointer-events: none; white-space: nowrap; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
-            `;
-            // Show Number + Text (e.g., "5: Login")
+                pointer-events: none; white-space: nowrap; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);`;
             tag.innerText = `${id}${labelText ? ': ' + labelText : ''}`;
             document.body.appendChild(tag);
-            
             window.renzuElements.push({ id, x: rect.left + rect.width/2, y: rect.top + rect.height/2 });
         });
     });
@@ -66,8 +60,6 @@ async function captureAndSend(message, url = null, interaction = null) {
         await applySmartTags(currentPage);
         const path = `${PUBLIC_DIR}/smart_${Date.now()}.png`;
         await currentPage.screenshot({ path });
-        
-        // Screenshot ke baad tags hata do taaki page clean rahe
         await currentPage.evaluate(() => document.querySelectorAll('.renzu-tag').forEach(el => el.remove()));
 
         const row = new ActionRowBuilder().addComponents(
@@ -77,40 +69,69 @@ async function captureAndSend(message, url = null, interaction = null) {
         );
 
         const payload = { 
-            content: "🏷️ **Labeled Control:**\n- Type the **Number** to click.\n- Type text to fill an input field.", 
+            content: "🏷️ **Labeled Control Active**", 
             files: [new AttachmentBuilder(path)], 
             components: [row] 
         };
         
         if (interaction) await interaction.editReply(payload);
-        else await message.reply(payload);
-        setTimeout(() => fs.existsSync(path) && fs.unlinkSync(path), 5000);
-    } catch (err) { console.error("Error:", err); }
+        else if (message) await message.reply(payload);
+        
+        if (fs.existsSync(path)) setTimeout(() => fs.unlinkSync(path), 5000);
+    } catch (err) { console.error("Capture Error:", err); }
 }
 
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const msg = message.content.trim();
 
+    // --- NEW: DETAILED STATUS COMMAND ---
+    if (msg.toLowerCase() === '?status') {
+        try {
+            const ipRes = await axios.get('https://api.ipify.org?format=json').catch(() => ({ data: { ip: 'Unknown' } }));
+            const uptime = Math.floor(process.uptime());
+            const freeMem = (os.freemem() / 1024 / 1024 / 1024).toFixed(2);
+            const totalMem = (os.totalmem() / 1024 / 1024 / 1024).toFixed(2);
+            
+            const embed = new EmbedBuilder()
+                .setTitle('📊 Renzu OS Detailed Status')
+                .setColor(0x00AE86)
+                .addFields(
+                    { name: '🌐 Server IP', value: `\`${ipRes.data.ip}\``, inline: true },
+                    { name: '🌐 Browser', value: currentBrowser ? '🟢 Active' : '🔴 Closed', inline: true },
+                    { name: '🐚 Terminal', value: activeProcess ? '🟡 Busy' : '🟢 Idle', inline: true },
+                    { name: '💾 RAM Usage', value: `${freeMem}GB / ${totalMem}GB Free`, inline: true },
+                    { name: '⏱️ Uptime', value: `${uptime}s`, inline: true },
+                    { name: '📍 Current URL', value: currentPage ? await currentPage.url() : 'None', inline: false }
+                )
+                .setTimestamp();
+
+            return message.reply({ embeds: [embed] });
+        } catch (e) { return message.reply("Error fetching status."); }
+    }
+
     if (currentPage && !msg.startsWith('!') && !msg.startsWith('?')) {
+        if (msg.toLowerCase() === 'back') {
+            await currentPage.goBack();
+            await message.react('⬅️');
+            return setTimeout(() => captureAndSend(message), 1000);
+        }
+
         if (/^\d+$/.test(msg)) {
-            const targetId = parseInt(msg);
             const coords = await currentPage.evaluate((id) => {
                 const found = window.renzuElements.find(e => e.id === id);
                 return found ? { x: found.x, y: found.y } : null;
-            }, targetId);
+            }, parseInt(msg));
 
             if (coords) {
                 await currentPage.mouse.click(coords.x, coords.y);
                 await message.react('🎯');
-                // Click ke baad page update hota hai, isliye naya screenshot bhejo
-                return setTimeout(() => captureAndSend(message), 1000);
+                return setTimeout(() => captureAndSend(message), 1200);
             }
         }
-        // Agar number nahi hai, toh typing assume karo
         await currentPage.keyboard.type(msg);
         await message.react('⌨️');
-        return setTimeout(() => captureAndSend(message), 500);
+        return setTimeout(() => captureAndSend(message), 800);
     }
 
     if (msg.toLowerCase().startsWith('?screenshot')) {
@@ -132,11 +153,17 @@ client.on('messageCreate', async (message) => {
 
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
+    if (!currentPage || !currentBrowser) return interaction.reply({ content: "❌ No active session.", ephemeral: true });
+
     await interaction.deferUpdate();
-    if (interaction.customId === 'scroll_down') await currentPage.evaluate(() => window.scrollBy(0, 450));
-    if (interaction.customId === 'scroll_up') await currentPage.evaluate(() => window.scrollBy(0, -450));
-    if (interaction.customId === 'close_browser') { if(currentBrowser) await currentBrowser.close(); currentBrowser = null; currentPage = null; return; }
-    if (currentPage) await captureAndSend(null, null, interaction);
+    if (interaction.customId === 'scroll_down') await currentPage.evaluate(() => window.scrollBy(0, 500));
+    if (interaction.customId === 'scroll_up') await currentPage.evaluate(() => window.scrollBy(0, -500));
+    if (interaction.customId === 'close_browser') {
+        await currentBrowser.close();
+        currentBrowser = null; currentPage = null;
+        return interaction.followUp("🛑 Browser Stopped.");
+    }
+    await captureAndSend(null, null, interaction);
 });
 
 client.login(process.env.TOKEN);
