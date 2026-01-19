@@ -15,7 +15,7 @@ let activeProcess = null, currentBrowser = null, currentPage = null;
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
-// --- IP FETCH FUNCTION (NO EXTERNAL PACKAGES) ---
+// --- IP FETCH (BUILT-IN) ---
 function getPublicIP() {
     return new Promise((resolve) => {
         https.get('https://api.ipify.org', (res) => {
@@ -59,10 +59,15 @@ async function applySmartTags(page) {
 async function captureAndSend(message, url = null, interaction = null) {
     try {
         if (!currentBrowser) {
-            // RAILWAY FIXED LAUNCH SETTINGS
+            // RAILWAY FIXED: Using Chromium path directly
             currentBrowser = await puppeteer.launch({ 
-                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] 
+                executablePath: '/usr/bin/chromium',
+                args: [
+                    '--no-sandbox', 
+                    '--disable-setuid-sandbox', 
+                    '--disable-dev-shm-usage', 
+                    '--disable-gpu'
+                ] 
             });
             currentPage = await currentBrowser.newPage();
             await currentPage.setViewport({ width: 1280, height: 720 });
@@ -77,7 +82,6 @@ async function captureAndSend(message, url = null, interaction = null) {
         const path = `${PUBLIC_DIR}/smart_${Date.now()}.png`;
         await currentPage.screenshot({ path });
         
-        // Tags remove for next action
         await currentPage.evaluate(() => document.querySelectorAll('.renzu-tag').forEach(el => el.remove()));
 
         const row = new ActionRowBuilder().addComponents(
@@ -87,7 +91,7 @@ async function captureAndSend(message, url = null, interaction = null) {
         );
 
         const payload = { 
-            content: "🏷️ **Renzu Smart Interface**", 
+            content: "🏷️ **Labeled Control Active**", 
             files: [new AttachmentBuilder(path)], 
             components: [row] 
         };
@@ -98,7 +102,9 @@ async function captureAndSend(message, url = null, interaction = null) {
         if (fs.existsSync(path)) setTimeout(() => fs.unlinkSync(path), 5000);
     } catch (err) { 
         console.error("Capture Error:", err);
-        if (message) message.reply("❌ Error: Build/Chrome issue.");
+        const errorMsg = "❌ Browser Error: Make sure Chromium is installed in Docker.";
+        if (interaction) await interaction.followUp(errorMsg);
+        else if (message) await message.reply(errorMsg);
     }
 }
 
@@ -120,16 +126,15 @@ client.on('messageCreate', async (message) => {
                 { name: '🌐 Server IP', value: `\`${ip}\``, inline: true },
                 { name: '🌐 Browser', value: currentBrowser ? '🟢 Active' : '🔴 Closed', inline: true },
                 { name: '🐚 Terminal', value: activeProcess ? '🟡 Busy' : '🟢 Idle', inline: true },
-                { name: '💾 RAM Usage', value: `${freeMem}GB / ${totalMem}GB`, inline: true },
+                { name: '💾 RAM Usage', value: `${freeMem}GB / ${totalMem}GB Free`, inline: true },
                 { name: '⏱️ Uptime', value: `${uptime}s`, inline: true },
-                { name: '📍 URL', value: currentPage ? (await currentPage.url()).substring(0, 50) : 'None', inline: false }
+                { name: '📍 Current URL', value: currentPage ? await currentPage.url() : 'None', inline: false }
             )
             .setTimestamp();
 
         return message.reply({ embeds: [embed] });
     }
 
-    // BROWSER CONTROL LOGIC
     if (currentPage && !msg.startsWith('!') && !msg.startsWith('?')) {
         if (msg.toLowerCase() === 'back') {
             await currentPage.goBack();
@@ -157,11 +162,9 @@ client.on('messageCreate', async (message) => {
     if (msg.toLowerCase().startsWith('?screenshot')) {
         await message.react('🌐');
         const url = msg.split(' ')[1];
-        if(!url) return message.reply("URL toh de bhai! Example: `?screenshot google.com` ");
         await captureAndSend(message, url);
     }
 
-    // TERMINAL COMMANDS
     if (msg.startsWith('!')) {
         const cmd = msg.slice(1);
         if (activeProcess) activeProcess.kill();
