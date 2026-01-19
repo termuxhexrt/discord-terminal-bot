@@ -1,6 +1,5 @@
-const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits } = require('discord.js');
 const { spawn, exec } = require('child_process');
-const { google } = require('googleapis');
 const fs = require('fs');
 require('dotenv').config();
 
@@ -9,86 +8,72 @@ const client = new Client({
 });
 
 const PUBLIC_DIR = '/app/storage/public_root';
-const FOLDER_ID = '12WNvwLFXzihn4f6ePz9kRNhQXb1tkVZp';
 let activeProcess = null; 
 
-// Google Drive Auth
-const driveJson = JSON.parse(process.env.GOOGLE_DRIVE_JSON);
-const auth = new google.auth.JWT(
-    driveJson.client_email,
-    null,
-    driveJson.private_key,
-    ['https://www.googleapis.com/auth/drive']
-);
-const drive = google.drive({ version: 'v3', auth });
-
-// --- AUTO-SYNC LOGIC ---
-async function autoSync() {
-    try {
-        const files = fs.readdirSync(PUBLIC_DIR);
-        for (const file of files) {
-            const filePath = `${PUBLIC_DIR}/${file}`;
-            if (fs.lstatSync(filePath).isFile()) {
-                await drive.files.create({
-                    requestBody: { name: file, parents: [FOLDER_ID] },
-                    media: { body: fs.createReadStream(filePath) }
-                });
-            }
-        }
-    } catch (err) { console.error("Sync Error:", err.message); }
+// --- ANSI STRIPPER (Saaf output ke liye) ---
+function stripAnsi(text) {
+    return text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 }
-setInterval(autoSync, 10 * 60 * 1000);
 
-client.on('ready', () => console.log(`Bot online! Default path: ${PUBLIC_DIR}`));
+client.on('ready', () => console.log(`Bot online! Root: ${PUBLIC_DIR}`));
 
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
-    const lowerMsg = message.content.toLowerCase();
 
-    // ? HELP
-    if (lowerMsg === '?help') {
-        return message.reply("🛠️ **Commands:** `! <cmd>` (Terminal), `?status`, `?stop` (Kill Process)");
+    const msgContent = message.content.trim();
+    
+    // --- 1. SMART INPUT (Jab process chal raha ho) ---
+    if (activeProcess && !msgContent.startsWith('!') && !msgContent.startsWith('?')) {
+        activeProcess.stdin.write(msgContent + '\n');
+        // Acknowledgment ke liye ek reaction de sakte ho
+        return message.react('📥').catch(() => {});
     }
 
-    // ? STATUS
-    if (lowerMsg === '?status') {
-        exec('df -h /app/storage', async (error, stdout) => {
-            let storageInfo = stdout ? stdout.split('\n')[1].replace(/\s+/g, ' ').split(' ') : ["N/A", "N/A", "N/A", "N/A"];
-            message.reply(`📊 **STATUS**\n💾 Volume: ${storageInfo[4] || '0%'} used\n🤖 RAM: ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)}MB`);
+    // --- 2. COMMANDS (?) ---
+    if (msgContent.toLowerCase() === '?status') {
+        exec('df -h /app/storage', (error, stdout) => {
+            let storage = stdout ? stdout.split('\n')[1].replace(/\s+/g, ' ').split(' ') : ["N/A","N/A","0%"];
+            message.reply(`📊 **Storage:** ${storage[4] || '0%'} Used | **RAM:** ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)}MB`);
         });
         return;
     }
 
-    // ? STOP
-    if (lowerMsg === '?stop') {
+    if (msgContent.toLowerCase() === '?stop') {
         if (activeProcess) {
-            activeProcess.kill('SIGINT');
+            activeProcess.kill('SIGKILL');
             activeProcess = null;
-            return message.reply("🛑 **Emergency Stop!** Process killed.");
+            return message.reply("🛑 **Killed!** Process ko forcefully band kar diya gaya hai.");
         }
         return message.reply("Bhai, kuch chal hi nahi raha.");
     }
 
-    // ! TERMINAL (LIVE LOGS MODE)
-    if (message.content.startsWith('!')) {
-        const fullCmd = message.content.slice(1).trim();
-        const liveMsg = await message.reply("🚀 Starting process...");
+    // --- 3. TERMINAL (!) ---
+    if (msgContent.startsWith('!')) {
+        const fullCmd = msgContent.slice(1).trim();
+        
+        // Agar pehle se koi process chal raha hai, usse pehle kill karo
+        if (activeProcess) {
+            activeProcess.kill();
+        }
 
-        // spawn is better for continuous logs
-        activeProcess = spawn(fullCmd, { shell: true, cwd: PUBLIC_DIR });
+        const liveMsg = await message.reply("⚡ **Executing...**");
+        
+        // Bash shell ke through command chalana better hota hai
+        activeProcess = spawn('/bin/bash', ['-c', fullCmd], { 
+            cwd: PUBLIC_DIR,
+            env: { ...process.env, TERM: 'xterm' } // Terminal environment simulate karne ke liye
+        });
 
         let outputBuffer = "";
-        
-        // Output ko update karne ka function
+
         const updateOutput = () => {
             if (outputBuffer.trim().length > 0) {
-                const cleanOutput = outputBuffer.slice(-1800); // Last 1800 chars to avoid Discord limit
-                liveMsg.edit(`\`\`\`\n${cleanOutput}\n\`\`\``).catch(() => {});
+                const clean = stripAnsi(outputBuffer).slice(-1900);
+                liveMsg.edit(`\`\`\`\n${clean}\n\`\`\``).catch(() => {});
             }
         };
 
-        // Har 2 second mein Discord message update hoga
-        const logInterval = setInterval(updateOutput, 2000);
+        const logInterval = setInterval(updateOutput, 2500);
 
         activeProcess.stdout.on('data', (data) => { outputBuffer += data.toString(); });
         activeProcess.stderr.on('data', (data) => { outputBuffer += data.toString(); });
@@ -96,8 +81,12 @@ client.on('messageCreate', async (message) => {
         activeProcess.on('close', (code) => {
             clearInterval(logInterval);
             activeProcess = null;
-            updateOutput(); // Final update
-            message.channel.send(`✅ Process finished (Code: ${code})`);
+            updateOutput();
+            message.channel.send(`✅ **Finished** (Exit Code: ${code})`);
+        });
+
+        activeProcess.on('error', (err) => {
+            message.channel.send(`❌ **Process Error:** ${err.message}`);
         });
     }
 });
