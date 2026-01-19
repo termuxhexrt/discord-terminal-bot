@@ -13,16 +13,15 @@ let activeProcess = null, currentBrowser = null, currentPage = null;
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
-// --- THE FIX: SMART NUMBER TAGS ---
+// --- THE ULTIMATE FIX: NUMBER + TEXT LABELS ---
 async function applySmartTags(page) {
     await page.evaluate(() => {
-        // Purane tags hatayein
         document.querySelectorAll('.renzu-tag').forEach(el => el.remove());
         
         const selectors = 'button, input, a, [role="button"], textarea, select';
         const elements = Array.from(document.querySelectorAll(selectors)).filter(el => {
             const rect = el.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).visibility !== 'hidden';
+            return rect.width > 2 && rect.height > 2 && window.getComputedStyle(el).visibility !== 'hidden';
         });
 
         window.renzuElements = []; 
@@ -31,15 +30,20 @@ async function applySmartTags(page) {
             const rect = el.getBoundingClientRect();
             const id = index + 1;
             
+            // Get label text (inner text or placeholder or aria-label)
+            let labelText = el.innerText || el.placeholder || el.getAttribute('aria-label') || el.value || "";
+            labelText = labelText.trim().substring(0, 15); // Shorten long text
+            
             const tag = document.createElement('div');
             tag.className = 'renzu-tag';
             tag.style = `
                 position: absolute; left: ${rect.left + window.scrollX}px; top: ${rect.top + window.scrollY}px;
                 background: #FFD700; color: black; font-weight: bold; border: 2px solid black;
-                padding: 2px 6px; z-index: 2147483647; font-size: 14px; border-radius: 4px;
-                pointer-events: none; box-shadow: 2px 2px 5px rgba(0,0,0,0.5);
+                padding: 1px 4px; z-index: 2147483647; font-size: 11px; border-radius: 3px;
+                pointer-events: none; white-space: nowrap; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
             `;
-            tag.innerText = id;
+            // Show Number + Text (e.g., "5: Login")
+            tag.innerText = `${id}${labelText ? ': ' + labelText : ''}`;
             document.body.appendChild(tag);
             
             window.renzuElements.push({ id, x: rect.left + rect.width/2, y: rect.top + rect.height/2 });
@@ -50,27 +54,30 @@ async function applySmartTags(page) {
 async function captureAndSend(message, url = null, interaction = null) {
     try {
         if (!currentBrowser) {
-            currentBrowser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+            currentBrowser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
             currentPage = await currentBrowser.newPage();
             await currentPage.setViewport({ width: 1280, height: 720 });
         }
-        if (url) await currentPage.goto(url.startsWith('http') ? url : `https://${url}`, { waitUntil: 'networkidle2' });
+        if (url) {
+            const targetUrl = url.startsWith('http') ? url : `https://${url}`;
+            await currentPage.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        }
 
         await applySmartTags(currentPage);
         const path = `${PUBLIC_DIR}/smart_${Date.now()}.png`;
         await currentPage.screenshot({ path });
         
-        // Tags delete karein taaki browsing mein interference na ho
+        // Screenshot ke baad tags hata do taaki page clean rahe
         await currentPage.evaluate(() => document.querySelectorAll('.renzu-tag').forEach(el => el.remove()));
 
         const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('scroll_up').setLabel('⬆️ Scroll Up').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('scroll_down').setLabel('⬇️ Scroll Down').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('scroll_up').setLabel('⬆️ Up').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('scroll_down').setLabel('⬇️ Down').setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId('close_browser').setLabel('🛑 Stop').setStyle(ButtonStyle.Danger)
         );
 
         const payload = { 
-            content: "🔢 **Mode: Smart Number Control**\n- Bas element ka **Number** likho click karne ke liye.\n- Text likhoge toh bot type kar dega.", 
+            content: "🏷️ **Labeled Control:**\n- Type the **Number** to click.\n- Type text to fill an input field.", 
             files: [new AttachmentBuilder(path)], 
             components: [row] 
         };
@@ -96,20 +103,25 @@ client.on('messageCreate', async (message) => {
             if (coords) {
                 await currentPage.mouse.click(coords.x, coords.y);
                 await message.react('🎯');
-                return captureAndSend(message);
+                // Click ke baad page update hota hai, isliye naya screenshot bhejo
+                return setTimeout(() => captureAndSend(message), 1000);
             }
         }
+        // Agar number nahi hai, toh typing assume karo
         await currentPage.keyboard.type(msg);
         await message.react('⌨️');
-        return captureAndSend(message);
+        return setTimeout(() => captureAndSend(message), 500);
     }
 
-    if (msg.toLowerCase().startsWith('?screenshot')) await captureAndSend(message, msg.split(' ')[1]);
+    if (msg.toLowerCase().startsWith('?screenshot')) {
+        await message.react('🌐');
+        await captureAndSend(message, msg.split(' ')[1]);
+    }
 
     if (msg.startsWith('!')) {
         const cmd = msg.slice(1);
         if (activeProcess) activeProcess.kill();
-        const live = await message.reply("⚡ Running...");
+        const live = await message.reply("⚡ Executing...");
         activeProcess = spawn('/bin/bash', ['-c', cmd], { cwd: PUBLIC_DIR });
         let buffer = "";
         const intv = setInterval(() => { if(buffer) live.edit(`\`\`\`\n${stripAnsi(buffer).slice(-1900)}\n\`\`\``).catch(()=>{}); }, 2500);
@@ -121,8 +133,8 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
     await interaction.deferUpdate();
-    if (interaction.customId === 'scroll_down') await currentPage.evaluate(() => window.scrollBy(0, 400));
-    if (interaction.customId === 'scroll_up') await currentPage.evaluate(() => window.scrollBy(0, -400));
+    if (interaction.customId === 'scroll_down') await currentPage.evaluate(() => window.scrollBy(0, 450));
+    if (interaction.customId === 'scroll_up') await currentPage.evaluate(() => window.scrollBy(0, -450));
     if (interaction.customId === 'close_browser') { if(currentBrowser) await currentBrowser.close(); currentBrowser = null; currentPage = null; return; }
     if (currentPage) await captureAndSend(null, null, interaction);
 });
