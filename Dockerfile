@@ -1,17 +1,17 @@
 FROM node:18
 
-# Install system dependencies + Google Chrome directly
+# Install system dependencies + Chromium browser
 RUN apt-get update && apt-get install -y \
     python3 nmap sqlmap dnsrecon curl wget git php unzip \
-    google-chrome-stable \
+    chromium \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Puppeteer download skip karne ke liye env set karo
+# Puppeteer ko Chromium use karne ke liye force karo
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 COPY package*.json ./
 RUN npm install
