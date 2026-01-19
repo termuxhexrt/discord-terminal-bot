@@ -3,7 +3,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const puppeteer = require('puppeteer');
 const os = require('os');
-const axios = require('axios'); // IP fetch ke liye
+const https = require('https'); // Built-in: No installation needed
 require('dotenv').config();
 
 const client = new Client({
@@ -14,6 +14,17 @@ const PUBLIC_DIR = '/app/storage/public_root';
 let activeProcess = null, currentBrowser = null, currentPage = null;
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
+
+// --- IP FETCH FUNCTION (WITHOUT AXIOS) ---
+function getPublicIP() {
+    return new Promise((resolve) => {
+        https.get('https://api.ipify.org', (res) => {
+            let data = '';
+            res.on('data', (chunk) => data += chunk);
+            res.on('end', () => resolve(data));
+        }).on('error', () => resolve('Unknown'));
+    });
+}
 
 // --- SMART LABELS LOGIC ---
 async function applySmartTags(page) {
@@ -85,29 +96,27 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const msg = message.content.trim();
 
-    // --- NEW: DETAILED STATUS COMMAND ---
+    // --- 📊 DETAILED STATUS COMMAND ---
     if (msg.toLowerCase() === '?status') {
-        try {
-            const ipRes = await axios.get('https://api.ipify.org?format=json').catch(() => ({ data: { ip: 'Unknown' } }));
-            const uptime = Math.floor(process.uptime());
-            const freeMem = (os.freemem() / 1024 / 1024 / 1024).toFixed(2);
-            const totalMem = (os.totalmem() / 1024 / 1024 / 1024).toFixed(2);
-            
-            const embed = new EmbedBuilder()
-                .setTitle('📊 Renzu OS Detailed Status')
-                .setColor(0x00AE86)
-                .addFields(
-                    { name: '🌐 Server IP', value: `\`${ipRes.data.ip}\``, inline: true },
-                    { name: '🌐 Browser', value: currentBrowser ? '🟢 Active' : '🔴 Closed', inline: true },
-                    { name: '🐚 Terminal', value: activeProcess ? '🟡 Busy' : '🟢 Idle', inline: true },
-                    { name: '💾 RAM Usage', value: `${freeMem}GB / ${totalMem}GB Free`, inline: true },
-                    { name: '⏱️ Uptime', value: `${uptime}s`, inline: true },
-                    { name: '📍 Current URL', value: currentPage ? await currentPage.url() : 'None', inline: false }
-                )
-                .setTimestamp();
+        const ip = await getPublicIP();
+        const uptime = Math.floor(process.uptime());
+        const freeMem = (os.freemem() / 1024 / 1024 / 1024).toFixed(2);
+        const totalMem = (os.totalmem() / 1024 / 1024 / 1024).toFixed(2);
+        
+        const embed = new EmbedBuilder()
+            .setTitle('📊 Renzu OS Detailed Status')
+            .setColor(0x00AE86)
+            .addFields(
+                { name: '🌐 Server IP', value: `\`${ip}\``, inline: true },
+                { name: '🌐 Browser', value: currentBrowser ? '🟢 Active' : '🔴 Closed', inline: true },
+                { name: '🐚 Terminal', value: activeProcess ? '🟡 Busy' : '🟢 Idle', inline: true },
+                { name: '💾 RAM Usage', value: `${freeMem}GB / ${totalMem}GB Free`, inline: true },
+                { name: '⏱️ Uptime', value: `${uptime}s`, inline: true },
+                { name: '📍 Current URL', value: currentPage ? await currentPage.url() : 'None', inline: false }
+            )
+            .setTimestamp();
 
-            return message.reply({ embeds: [embed] });
-        } catch (e) { return message.reply("Error fetching status."); }
+        return message.reply({ embeds: [embed] });
     }
 
     if (currentPage && !msg.startsWith('!') && !msg.startsWith('?')) {
