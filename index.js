@@ -104,12 +104,15 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const msg = message.content.trim();
 
-    // 📊 STATUS COMMAND
+    // 📊 STATUS COMMAND (FIXED FOR REAL RAM)
     if (msg.toLowerCase() === '?status') {
         const ip = await getPublicIP();
         const uptime = Math.floor(process.uptime());
-        const freeMem = (os.freemem() / 1024 / 1024 / 1024).toFixed(2);
-        const totalMem = (os.totalmem() / 1024 / 1024 / 1024).toFixed(2);
+        
+        // Ye tere bot ka actual memory usage nikalega
+        const memUsage = process.memoryUsage();
+        const usedMem = (memUsage.heapUsed / 1024 / 1024).toFixed(2); // Active memory in MB
+        const totalAllocated = (memUsage.rss / 1024 / 1024).toFixed(2); // Total allocated in MB
         
         const embed = new EmbedBuilder()
             .setTitle('📊 Renzu OS Detailed Status')
@@ -118,7 +121,7 @@ client.on('messageCreate', async (message) => {
                 { name: '🌐 Server IP', value: `\`${ip}\``, inline: true },
                 { name: '🌐 Browser', value: currentBrowser ? '🟢 Active' : '🔴 Closed', inline: true },
                 { name: '🐚 Terminal', value: activeProcess ? '🟡 Busy' : '🟢 Idle', inline: true },
-                { name: '💾 RAM Usage', value: `${freeMem}GB / ${totalMem}GB`, inline: true },
+                { name: '💾 Bot RAM', value: `${usedMem}MB / ${totalAllocated}MB`, inline: true },
                 { name: '⏱️ Uptime', value: `${uptime}s`, inline: true },
                 { name: '📍 URL', value: currentPage ? (await currentPage.url()) : 'None', inline: false }
             )
