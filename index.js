@@ -3,7 +3,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const puppeteer = require('puppeteer');
 const os = require('os');
-const https = require('https'); // Built-in: No installation needed
+const https = require('https'); 
 require('dotenv').config();
 
 const client = new Client({
@@ -15,7 +15,7 @@ let activeProcess = null, currentBrowser = null, currentPage = null;
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
-// --- IP FETCH FUNCTION (WITHOUT AXIOS) ---
+// --- IP FETCH FUNCTION (NO EXTERNAL PACKAGES) ---
 function getPublicIP() {
     return new Promise((resolve) => {
         https.get('https://api.ipify.org', (res) => {
@@ -59,10 +59,15 @@ async function applySmartTags(page) {
 async function captureAndSend(message, url = null, interaction = null) {
     try {
         if (!currentBrowser) {
-            currentBrowser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
+            // RAILWAY FIXED LAUNCH SETTINGS
+            currentBrowser = await puppeteer.launch({ 
+                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] 
+            });
             currentPage = await currentBrowser.newPage();
             await currentPage.setViewport({ width: 1280, height: 720 });
         }
+        
         if (url) {
             const targetUrl = url.startsWith('http') ? url : `https://${url}`;
             await currentPage.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
@@ -71,6 +76,8 @@ async function captureAndSend(message, url = null, interaction = null) {
         await applySmartTags(currentPage);
         const path = `${PUBLIC_DIR}/smart_${Date.now()}.png`;
         await currentPage.screenshot({ path });
+        
+        // Tags remove for next action
         await currentPage.evaluate(() => document.querySelectorAll('.renzu-tag').forEach(el => el.remove()));
 
         const row = new ActionRowBuilder().addComponents(
@@ -80,7 +87,7 @@ async function captureAndSend(message, url = null, interaction = null) {
         );
 
         const payload = { 
-            content: "🏷️ **Labeled Control Active**", 
+            content: "🏷️ **Renzu Smart Interface**", 
             files: [new AttachmentBuilder(path)], 
             components: [row] 
         };
@@ -89,14 +96,17 @@ async function captureAndSend(message, url = null, interaction = null) {
         else if (message) await message.reply(payload);
         
         if (fs.existsSync(path)) setTimeout(() => fs.unlinkSync(path), 5000);
-    } catch (err) { console.error("Capture Error:", err); }
+    } catch (err) { 
+        console.error("Capture Error:", err);
+        if (message) message.reply("❌ Error: Build/Chrome issue.");
+    }
 }
 
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const msg = message.content.trim();
 
-    // --- 📊 DETAILED STATUS COMMAND ---
+    // 📊 STATUS COMMAND
     if (msg.toLowerCase() === '?status') {
         const ip = await getPublicIP();
         const uptime = Math.floor(process.uptime());
@@ -110,15 +120,16 @@ client.on('messageCreate', async (message) => {
                 { name: '🌐 Server IP', value: `\`${ip}\``, inline: true },
                 { name: '🌐 Browser', value: currentBrowser ? '🟢 Active' : '🔴 Closed', inline: true },
                 { name: '🐚 Terminal', value: activeProcess ? '🟡 Busy' : '🟢 Idle', inline: true },
-                { name: '💾 RAM Usage', value: `${freeMem}GB / ${totalMem}GB Free`, inline: true },
+                { name: '💾 RAM Usage', value: `${freeMem}GB / ${totalMem}GB`, inline: true },
                 { name: '⏱️ Uptime', value: `${uptime}s`, inline: true },
-                { name: '📍 Current URL', value: currentPage ? await currentPage.url() : 'None', inline: false }
+                { name: '📍 URL', value: currentPage ? (await currentPage.url()).substring(0, 50) : 'None', inline: false }
             )
             .setTimestamp();
 
         return message.reply({ embeds: [embed] });
     }
 
+    // BROWSER CONTROL LOGIC
     if (currentPage && !msg.startsWith('!') && !msg.startsWith('?')) {
         if (msg.toLowerCase() === 'back') {
             await currentPage.goBack();
@@ -145,18 +156,24 @@ client.on('messageCreate', async (message) => {
 
     if (msg.toLowerCase().startsWith('?screenshot')) {
         await message.react('🌐');
-        await captureAndSend(message, msg.split(' ')[1]);
+        const url = msg.split(' ')[1];
+        if(!url) return message.reply("URL toh de bhai! Example: `?screenshot google.com` ");
+        await captureAndSend(message, url);
     }
 
+    // TERMINAL COMMANDS
     if (msg.startsWith('!')) {
         const cmd = msg.slice(1);
         if (activeProcess) activeProcess.kill();
         const live = await message.reply("⚡ Executing...");
         activeProcess = spawn('/bin/bash', ['-c', cmd], { cwd: PUBLIC_DIR });
         let buffer = "";
-        const intv = setInterval(() => { if(buffer) live.edit(`\`\`\`\n${stripAnsi(buffer).slice(-1900)}\n\`\`\``).catch(()=>{}); }, 2500);
+        const intv = setInterval(() => { 
+            if(buffer) live.edit(`\`\`\`\n${stripAnsi(buffer).slice(-1900)}\n\`\`\``).catch(()=>{}); 
+        }, 2500);
         activeProcess.on('close', () => { clearInterval(intv); activeProcess = null; });
         activeProcess.stdout.on('data', d => buffer += d);
+        activeProcess.stderr.on('data', d => buffer += d);
     }
 });
 
