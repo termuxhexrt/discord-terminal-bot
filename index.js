@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const { exec } = require('child_process');
 const { google } = require('googleapis');
 const fs = require('fs');
@@ -10,7 +10,7 @@ const client = new Client({
 
 const PUBLIC_DIR = '/app/storage/public_root';
 const FOLDER_ID = '12WNvwLFXzihn4f6ePz9kRNhQXb1tkVZp';
-let activeProcess = null; // Current command track karne ke liye
+let activeProcess = null; // Track current command
 
 // Google Drive Auth
 const driveJson = JSON.parse(process.env.GOOGLE_DRIVE_JSON);
@@ -50,52 +50,64 @@ client.on('ready', () => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
-    const msg = message.content.toLowerCase();
+    const lowerMsg = message.content.toLowerCase();
+
+    // --- ? HELP COMMAND ---
+    if (lowerMsg === '?help') {
+        const helpText = `
+🛠️ **RENZU-TERMINAL HELP MENU** 🛠️
+---
+**Main Commands:**
+• \`! <command>\` : Linux terminal command chalao (e.g., \`!ls\`, \`!nmap\`).
+• \`?status\` : Volume aur Drive ka status dekho.
+• \`?stop\` : Kisi bhi running command ko turant kill karo.
+
+**Storage Info:**
+• **Local Volume:** 434MB (Fast, temporary storage).
+• **Google Drive:** 15GB (Auto-sync har 10 min mein).
+• **Path:** Files \`/app/storage/public_root\` mein rakho.
+
+**Pro Tip:** Agar \`!nmap\` ya \`!apt\` atak jaye, toh \`?stop\` use karein.
+---`;
+        return message.reply(helpText);
+    }
 
     // --- ? STATUS COMMAND ---
-    if (msg === '?status') {
+    if (lowerMsg === '?status') {
         exec('df -h /app/storage', async (error, stdout) => {
             let storageInfo = stdout ? stdout.split('\n')[1].replace(/\s+/g, ' ').split(' ') : ["N/A", "N/A", "N/A", "N/A"];
             let driveStatus = "Checking...";
             try { 
                 await drive.about.get({ fields: 'user' }); 
-                driveStatus = "✅ Connected"; 
+                driveStatus = "✅ Connected (15GB Sync ON)"; 
             } catch (e) { driveStatus = "❌ Error"; }
 
-            message.reply(`📊 **SYSTEM STATUS**\n💾 Disk: ${storageInfo[4] || '0%'} used\n☁️ Drive: ${driveStatus}\n🤖 RAM: ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)}MB`);
+            message.reply(`📊 **SYSTEM STATUS**\n💾 Volume: ${storageInfo[4] || '0%'} used\n☁️ Drive: ${driveStatus}\n🤖 RAM: ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)}MB`);
         });
         return;
     }
 
-    // --- ? STOP COMMAND (The Kill Switch) ---
-    if (msg === '?stop') {
+    // --- ? STOP COMMAND ---
+    if (lowerMsg === '?stop') {
         if (activeProcess) {
-            activeProcess.kill('SIGINT'); // Ctrl+C signal
+            activeProcess.kill();
             activeProcess = null;
-            return message.reply("🛑 **Emergency Stop!** Saari running commands band kar di gayi hain.");
-        } else {
-            // Backup kill just in case
-            exec('pkill -u root'); 
-            return message.reply("Bhai, koi active process nahi mila, par maine safety ke liye cleanup command chala di hai.");
+            return message.reply("🛑 **Process Terminated.** Command ko beech mein rok diya gaya hai.");
         }
+        return message.reply("Bhai, abhi koi active command nahi chal rahi.");
     }
 
     // --- ! TERMINAL COMMANDS ---
     if (message.content.startsWith('!')) {
         const fullCmd = message.content.slice(1);
         
-        message.channel.sendTyping(); // Bot is thinking...
-
+        // Command start hone se pehle track karo
         activeProcess = exec(fullCmd, { shell: '/bin/bash', cwd: PUBLIC_DIR }, (error, stdout, stderr) => {
-            activeProcess = null; // Command khatam
+            activeProcess = null; // Command finish
             let out = stdout || stderr;
             if (out) {
-                if (out.length > 1900) {
-                    const truncated = out.substring(0, 1900) + "\n...[Output too long]";
-                    message.reply(`\`\`\`\n${truncated}\n\`\`\``);
-                } else {
-                    message.reply(`\`\`\`\n${out}\n\`\`\``);
-                }
+                if (out.length > 1900) return message.reply("Output too long, check logs or use output redirection.");
+                message.reply(`\`\`\`\n${out}\n\`\`\``);
             } else {
                 message.reply(error ? `❌ Error: ${error.message}` : "✅ Command executed (No output).");
             }
