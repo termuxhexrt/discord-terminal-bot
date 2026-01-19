@@ -5,14 +5,13 @@ const fs = require('fs');
 require('dotenv').config();
 
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
-    ]
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
-// Google Drive Auth Setup
+const PUBLIC_DIR = '/app/storage/public_root';
+const FOLDER_ID = '12WNvwLFXzihn4f6ePz9kRNhQXb1tkVZp';
+
+// Google Drive Auth
 const driveJson = JSON.parse(process.env.GOOGLE_DRIVE_JSON);
 const auth = new google.auth.JWT(
     driveJson.client_email,
@@ -22,86 +21,64 @@ const auth = new google.auth.JWT(
 );
 const drive = google.drive({ version: 'v3', auth });
 
+// --- AUTO-SYNC LOGIC ---
+async function autoSync() {
+    console.log("Auto-Sync starting...");
+    try {
+        const files = fs.readdirSync(PUBLIC_DIR);
+        for (const file of files) {
+            const filePath = `${PUBLIC_DIR}/${file}`;
+            if (fs.lstatSync(filePath).isFile()) {
+                // Check if already uploaded (basic check)
+                await drive.files.create({
+                    requestBody: { name: file, parents: [FOLDER_ID] },
+                    media: { body: fs.createReadStream(filePath) }
+                });
+                console.log(`Auto-Synced: ${file}`);
+            }
+        }
+    } catch (err) {
+        console.error("Sync Error:", err.message);
+    }
+}
+
+// Har 10 minute mein sync chalega
+setInterval(autoSync, 10 * 60 * 1000);
+
 client.on('ready', () => {
-    console.log(`Bot is online! Default directory: /app/storage/public_root`);
+    console.log(`Bot online! Default path: ${PUBLIC_DIR}`);
 });
 
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
-    // --- SPECIAL STATUS COMMAND (Prefix: ?) ---
+    // ?status Command
     if (message.content.toLowerCase() === '?status') {
         exec('df -h /app/storage', async (error, stdout) => {
             let storageInfo = stdout ? stdout.split('\n')[1].replace(/\s+/g, ' ').split(' ') : ["N/A", "N/A", "N/A", "N/A"];
-            
             let driveStatus = "Checking...";
-            try {
-                await drive.about.get({ fields: 'user' });
-                driveStatus = "✅ Connected (15GB Ready)";
-            } catch (e) {
-                driveStatus = "❌ Disconnected";
-            }
+            try { 
+                await drive.about.get({ fields: 'user' }); 
+                driveStatus = "✅ Connected (15GB Sync ON)"; 
+            } catch (e) { driveStatus = "❌ Error"; }
 
-            const statusEmbed = `
-📊 **RENZU TERMINAL STATUS** 📊
----
-💾 **Volume Storage (434MB):**
-• Total: ${storageInfo[1] || 'N/A'}
-• Used: ${storageInfo[2] || 'N/A'}
-• Available: ${storageInfo[3] || 'N/A'}
-• Usage: ${storageInfo[4] || '0%'}
-
-☁️ **Google Drive:** ${driveStatus}
-
-🤖 **System:**
-• Uptime: ${Math.floor(process.uptime() / 60)} mins
-• RAM: ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB
----
-*Use \`!\` for Terminal and \`?status\` for this menu.*`;
-            
-            return message.reply(statusEmbed);
+            message.reply(`📊 **STATUS**\n💾 Volume: ${storageInfo[4] || '0%'} used\n☁️ Drive: ${driveStatus}\n🤖 RAM: ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)}MB`);
         });
-        return; 
+        return;
     }
 
-    // --- NORMAL COMMANDS (Prefix: !) ---
+    // ! Terminal Commands
     if (message.content.startsWith('!')) {
-        const args = message.content.slice(1).trim().split(/ +/);
-        const command = args.shift().toLowerCase();
-
-        if (command === 'upload') {
-            const fileName = args[0];
-            if (!fileName) return message.reply("Bhai, file name toh batao!");
-
-            const filePath = `/app/storage/public_root/${fileName}`;
-            if (!fs.existsSync(filePath)) return message.reply("Bhai, file nahi mili.");
-
-            try {
-                const res = await drive.files.create({
-                    requestBody: { name: fileName, parents: ['12WNvwLFXzihn4f6ePz9kRNhQXb1tkVZp'] },
-                    media: { body: fs.createReadStream(filePath) }
-                });
-                message.reply(`✅ Drive par upload ho gayi! ID: \`${res.data.id}\``);
-            } catch (err) {
-                message.reply(`❌ Drive Error: ${err.message}`);
+        const fullCmd = message.content.slice(1);
+        exec(fullCmd, { shell: '/bin/bash', cwd: PUBLIC_DIR }, (error, stdout, stderr) => {
+            let out = stdout || stderr;
+            if (out) {
+                if (out.length > 1900) return message.reply("Output too long, check logs.");
+                message.reply(`\`\`\`\n${out}\n\`\`\``);
+            } else {
+                message.reply(error ? `Error: ${error.message}` : "Command executed (No output - maybe directory is empty).");
             }
-        } 
-        else {
-            const fullCmd = message.content.slice(1);
-            exec(fullCmd, { shell: '/bin/bash', cwd: '/app/storage/public_root' }, (error, stdout, stderr) => {
-                let response = "";
-                if (error) response += `**Error:**\n\`\`\`\n${error.message}\n\`\`\`\n`;
-                if (stderr) response += `**Stderr:**\n\`\`\`\n${stderr}\n\`\`\`\n`;
-                if (stdout) response += `**Output:**\n\`\`\`\n${stdout}\n\`\`\`\n`;
-
-                if (response.length > 2000) {
-                    message.reply("Output bada hai, bhej raha hoon...");
-                    message.channel.send(response.substring(0, 1900));
-                } else {
-                    message.reply(response || "Done!");
-                }
-            });
-        }
+        });
     }
 });
 
