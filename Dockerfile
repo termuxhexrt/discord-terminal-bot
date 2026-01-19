@@ -1,6 +1,6 @@
 FROM node:18
 
-# Hacking tools + Full Puppeteer dependencies
+# System dependencies for Puppeteer and Hacking Tools
 RUN apt-get update && apt-get install -y \
     python3 nmap sqlmap dnsrecon curl wget git php unzip \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 \
@@ -13,7 +13,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 
-# Puppeteer install with chrome
+# Puppeteer ke sath bundled Chromium download karne ke liye
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
 RUN npm install puppeteer
 
 COPY . .
