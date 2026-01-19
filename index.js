@@ -15,7 +15,6 @@ let activeProcess = null, currentBrowser = null, currentPage = null;
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
-// --- IP FETCH ---
 function getPublicIP() {
     return new Promise((resolve) => {
         https.get('https://api.ipify.org', (res) => {
@@ -26,11 +25,12 @@ function getPublicIP() {
     });
 }
 
-// --- SMART TAGS (Identifying Clickable Elements) ---
+// --- UPGRADED SMART TAGS (Supports Recommendations) ---
 async function applySmartTags(page) {
     await page.evaluate(() => {
         document.querySelectorAll('.renzu-tag').forEach(el => el.remove());
-        const selectors = 'button, input, a, [role="button"], textarea, select';
+        // Added 'li' and 'role=option' to capture Google/Search recommendations
+        const selectors = 'button, input, a, [role="button"], textarea, select, li, [role="option"]';
         const elements = Array.from(document.querySelectorAll(selectors)).filter(el => {
             const rect = el.getBoundingClientRect();
             return rect.width > 2 && rect.height > 2 && window.getComputedStyle(el).visibility !== 'hidden';
@@ -40,16 +40,14 @@ async function applySmartTags(page) {
         elements.forEach((el, index) => {
             const rect = el.getBoundingClientRect();
             const id = index + 1;
-            let labelText = el.innerText || el.placeholder || el.getAttribute('aria-label') || el.value || "";
-            labelText = labelText.trim().substring(0, 15);
             
             const tag = document.createElement('div');
             tag.className = 'renzu-tag';
             tag.style = `position: absolute; left: ${rect.left + window.scrollX}px; top: ${rect.top + window.scrollY}px;
-                background: #FFD700; color: black; font-weight: bold; border: 2px solid black;
-                padding: 1px 4px; z-index: 2147483647; font-size: 11px; border-radius: 3px;
-                pointer-events: none; white-space: nowrap; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);`;
-            tag.innerText = `${id}${labelText ? ': ' + labelText : ''}`;
+                background: #FFD700; color: black; font-weight: bold; border: 1px solid black;
+                padding: 0px 2px; z-index: 2147483647; font-size: 10px; border-radius: 2px;
+                pointer-events: none; white-space: nowrap; box-shadow: 1px 1px 3px rgba(0,0,0,0.3);`;
+            tag.innerText = id; 
             document.body.appendChild(tag);
             window.renzuElements.push({ id, x: rect.left + rect.width/2, y: rect.top + rect.height/2 });
         });
@@ -60,7 +58,7 @@ async function captureAndSend(message, url = null, interaction = null) {
     try {
         if (!currentBrowser) {
             currentBrowser = await puppeteer.launch({ 
-                executablePath: '/usr/bin/chromium', // EXACT PATH FROM DOCKER
+                executablePath: '/usr/bin/chromium',
                 args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] 
             });
             currentPage = await currentBrowser.newPage();
@@ -78,16 +76,22 @@ async function captureAndSend(message, url = null, interaction = null) {
         
         await currentPage.evaluate(() => document.querySelectorAll('.renzu-tag').forEach(el => el.remove()));
 
-        const row = new ActionRowBuilder().addComponents(
+        // --- ADDED NAVIGATION BUTTONS ---
+        const row1 = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('scroll_up').setLabel('⬆️ Up').setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId('scroll_down').setLabel('⬇️ Down').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('go_back_btn').setLabel('⬅️ Back').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('clear_input').setLabel('✂️ Cut').setStyle(ButtonStyle.Danger)
+        );
+        const row2 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('backspace_key').setLabel('⌫ BS').setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId('close_browser').setLabel('🛑 Stop').setStyle(ButtonStyle.Danger)
         );
 
         const payload = { 
             content: "🏷️ **Renzu Smart Interface**", 
             files: [new AttachmentBuilder(path)], 
-            components: [row] 
+            components: [row1, row2] 
         };
         
         if (interaction) await interaction.editReply(payload);
@@ -104,15 +108,12 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const msg = message.content.trim();
 
-    // 📊 STATUS COMMAND (FIXED FOR REAL RAM)
     if (msg.toLowerCase() === '?status') {
         const ip = await getPublicIP();
         const uptime = Math.floor(process.uptime());
-        
-        // Ye tere bot ka actual memory usage nikalega
         const memUsage = process.memoryUsage();
-        const usedMem = (memUsage.heapUsed / 1024 / 1024).toFixed(2); // Active memory in MB
-        const totalAllocated = (memUsage.rss / 1024 / 1024).toFixed(2); // Total allocated in MB
+        const usedMem = (memUsage.heapUsed / 1024 / 1024).toFixed(2);
+        const totalAllocated = (memUsage.rss / 1024 / 1024).toFixed(2);
         
         const embed = new EmbedBuilder()
             .setTitle('📊 Renzu OS Detailed Status')
@@ -130,13 +131,7 @@ client.on('messageCreate', async (message) => {
         return message.reply({ embeds: [embed] });
     }
 
-    // BROWSER CONTROL
     if (currentPage && !msg.startsWith('!') && !msg.startsWith('?')) {
-        if (msg.toLowerCase() === 'back') {
-            await currentPage.goBack();
-            return setTimeout(() => captureAndSend(message), 1000);
-        }
-
         if (/^\d+$/.test(msg)) {
             const coords = await currentPage.evaluate((id) => {
                 const found = window.renzuElements.find(e => e.id === id);
@@ -149,16 +144,16 @@ client.on('messageCreate', async (message) => {
             }
         }
         await currentPage.keyboard.type(msg);
-        return setTimeout(() => captureAndSend(message), 800);
+        await currentPage.keyboard.press('Enter'); // Auto-enter for convenience
+        return setTimeout(() => captureAndSend(message), 1000);
     }
 
     if (msg.toLowerCase().startsWith('?screenshot')) {
         const url = msg.split(' ')[1];
-        if(!url) return message.reply("URL toh de! Example: `?screenshot google.com` ");
+        if(!url) return message.reply("URL toh de!");
         await captureAndSend(message, url);
     }
 
-    // TERMINAL COMMANDS
     if (msg.startsWith('!')) {
         const cmd = msg.slice(1);
         if (activeProcess) activeProcess.kill();
@@ -176,16 +171,26 @@ client.on('messageCreate', async (message) => {
 
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
-    if (!currentPage || !currentBrowser) return interaction.reply({ content: "❌ No active session.", ephemeral: true });
+    if (!currentPage) return interaction.reply({ content: "❌ No active session.", ephemeral: true });
 
     await interaction.deferUpdate();
+    
     if (interaction.customId === 'scroll_down') await currentPage.evaluate(() => window.scrollBy(0, 500));
     if (interaction.customId === 'scroll_up') await currentPage.evaluate(() => window.scrollBy(0, -500));
+    if (interaction.customId === 'go_back_btn') await currentPage.goBack();
+    if (interaction.customId === 'backspace_key') await currentPage.keyboard.press('Backspace');
+    if (interaction.customId === 'clear_input') {
+        await currentPage.keyboard.down('Control');
+        await currentPage.keyboard.press('a');
+        await currentPage.keyboard.up('Control');
+        await currentPage.keyboard.press('Backspace');
+    }
     if (interaction.customId === 'close_browser') {
         await currentBrowser.close();
         currentBrowser = null; currentPage = null;
         return interaction.followUp("🛑 Browser Stopped.");
     }
+    
     await captureAndSend(null, null, interaction);
 });
 
