@@ -29,29 +29,45 @@ function getPublicIP() {
     });
 }
 
-// --- SMART TAGS (Supports Search Recs) ---
+// --- SMART TAGS (With Iframe/CAPTCHA Support) ---
 async function applySmartTags(page) {
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
         document.querySelectorAll('.renzu-tag').forEach(el => el.remove());
-        const selectors = 'button, input, a, [role="button"], textarea, select, li, [role="option"]';
-        const elements = Array.from(document.querySelectorAll(selectors)).filter(el => {
-            const rect = el.getBoundingClientRect();
-            return rect.width > 2 && rect.height > 2 && window.getComputedStyle(el).visibility !== 'hidden';
-        });
+        window.renzuElements = [];
+        let idCounter = 1;
 
-        window.renzuElements = []; 
-        elements.forEach((el, index) => {
-            const rect = el.getBoundingClientRect();
-            const id = index + 1;
-            const tag = document.createElement('div');
-            tag.className = 'renzu-tag';
-            tag.style = `position: absolute; left: ${rect.left + window.scrollX}px; top: ${rect.top + window.scrollY}px;
-                background: #FFD700; color: black; font-weight: bold; border: 1px solid black;
-                padding: 0px 2px; z-index: 2147483647; font-size: 10px; border-radius: 2px;
-                pointer-events: none; white-space: nowrap;`;
-            tag.innerText = id; 
-            document.body.appendChild(tag);
-            window.renzuElements.push({ id, x: rect.left + rect.width/2, y: rect.top + rect.height/2 });
+        const tagDoc = (doc, offsetX = 0, offsetY = 0) => {
+            if (!doc) return;
+            const selectors = 'button, input, a, [role="button"], textarea, [role="checkbox"], li, [role="option"]';
+            const elements = Array.from(doc.querySelectorAll(selectors));
+            
+            elements.forEach(el => {
+                const rect = el.getBoundingClientRect();
+                if (rect.width > 2 && rect.height > 2 && window.getComputedStyle(el).visibility !== 'hidden') {
+                    const id = idCounter++;
+                    const tag = doc.createElement('div');
+                    tag.className = 'renzu-tag';
+                    tag.style = `position: absolute; left: ${rect.left + doc.defaultView.scrollX}px; top: ${rect.top + doc.defaultView.scrollY}px;
+                        background: #FFD700; color: black; font-weight: bold; border: 1px solid black;
+                        padding: 0px 2px; z-index: 2147483647; font-size: 11px; border-radius: 2px; pointer-events: none;`;
+                    tag.innerText = id;
+                    doc.body.appendChild(tag);
+                    
+                    window.renzuElements.push({ 
+                        id, 
+                        x: rect.left + rect.width/2 + offsetX, 
+                        y: rect.top + rect.height/2 + offsetY 
+                    });
+                }
+            });
+        };
+
+        tagDoc(document);
+        document.querySelectorAll('iframe').forEach(iframe => {
+            try {
+                const rect = iframe.getBoundingClientRect();
+                tagDoc(iframe.contentDocument, rect.left, rect.top);
+            } catch (e) {}
         });
     });
 }
@@ -65,8 +81,9 @@ async function captureAndSend(message, url = null, interaction = null) {
                 args: [
                     '--no-sandbox', 
                     '--disable-setuid-sandbox', 
-                    '--disable-blink-features=AutomationControlled', // Bypass detection
-                    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    '--disable-blink-features=AutomationControlled',
+                    '--incognito',
+                    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
                 ] 
             });
             currentPage = await currentBrowser.newPage();
@@ -135,11 +152,14 @@ client.on('messageCreate', async (message) => {
                 return found ? { x: found.x, y: found.y } : null;
             }, parseInt(msg));
             if (coords) {
-                await currentPage.mouse.click(coords.x, coords.y);
+                // Human-like click logic
+                await currentPage.mouse.move(coords.x - 5, coords.y - 5);
+                await new Promise(r => setTimeout(r, 150));
+                await currentPage.mouse.click(coords.x, coords.y, { delay: 100 });
                 return setTimeout(() => captureAndSend(message), 1500);
             }
         }
-        await currentPage.keyboard.type(msg, { delay: 50 }); // Typing delay for human feel
+        await currentPage.keyboard.type(msg, { delay: 60 });
         return setTimeout(() => captureAndSend(message), 1000);
     }
 
@@ -172,14 +192,13 @@ client.on('interactionCreate', async interaction => {
     if (interaction.customId === 'go_back_btn') await currentPage.goBack();
     if (interaction.customId === 'backspace_key') await currentPage.keyboard.press('Backspace');
     if (interaction.customId === 'clear_input') {
-        await currentPage.click('input'); // Focus first
         await currentPage.keyboard.down('Control');
         await currentPage.keyboard.press('a');
         await currentPage.keyboard.up('Control');
         await currentPage.keyboard.press('Backspace');
     }
     if (interaction.customId === 'close_browser') {
-        await currentBrowser.close();
+        if(currentBrowser) await currentBrowser.close();
         currentBrowser = null; currentPage = null;
         return interaction.followUp("🛑 Stopped.");
     }
