@@ -1,14 +1,20 @@
 {
   "name": "discord-terminal-bot",
   "version": "1.0.0",
-  "description": "",
+  "description": "Renzu OS with Stealth Browser",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "discord.js": "^14.13.0",
-    "dotenv": "^16.3.1",
-    "puppeteer": "^21.5.0"
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.4.1",
+    "puppeteer": "^21.11.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "https": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
