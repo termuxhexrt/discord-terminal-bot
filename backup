@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, AttachmentBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
 const { spawn, exec } = require('child_process');
 const fs = require('fs');
 const puppeteer = require('puppeteer');
@@ -9,119 +9,118 @@ const client = new Client({
 });
 
 const PUBLIC_DIR = '/app/storage/public_root';
-let activeProcess = null; 
+let activeProcess = null;
+let currentBrowser = null;
+let currentPage = null;
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
-client.on('ready', () => console.log(`🚀 Renzu Terminal Online! Debugging enabled.`));
+client.on('ready', () => console.log(`🚀 Renzu Remote Control Online!`));
+
+// Browser Control Function
+async function captureAndSend(message, url = null, interaction = null) {
+    try {
+        if (!currentBrowser) {
+            currentBrowser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
+            currentPage = await currentBrowser.newPage();
+            await currentPage.setViewport({ width: 1280, height: 720 });
+        }
+
+        if (url) {
+            await currentPage.goto(url.startsWith('http') ? url : `https://${url}`, { waitUntil: 'networkidle2', timeout: 60000 });
+        }
+
+        const path = `${PUBLIC_DIR}/remote_${Date.now()}.png`;
+        await currentPage.screenshot({ path });
+        const file = new AttachmentBuilder(path);
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('scroll_up').setLabel('⬆️').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('scroll_down').setLabel('⬇️').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('click_center').setLabel('🖱️ Click').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('type_text').setLabel('⌨️ Type').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('close_browser').setLabel('🛑 Stop').setStyle(ButtonStyle.Danger)
+        );
+
+        const payload = { content: `🌐 **Live View:** ${url || ''}`, files: [file], components: [row] };
+        
+        if (interaction) await interaction.editReply(payload);
+        else await message.reply(payload);
+
+        setTimeout(() => { if (fs.existsSync(path)) fs.unlinkSync(path); }, 5000);
+    } catch (err) {
+        const errorMsg = `❌ **Browser Error:** ${err.message}`;
+        if (interaction) interaction.followUp(errorMsg);
+        else message.reply(errorMsg);
+    }
+}
 
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const msg = message.content.trim();
 
-    // --- SCREENSHOT COMMAND ---
     if (msg.toLowerCase().startsWith('?screenshot')) {
         const url = msg.split(' ')[1];
-        if (!url) return message.reply("❌ URL missing! Example: `?screenshot google.com` ");
-
-        const waitMsg = await message.reply("📸 Opening headless browser...");
-        let browser;
-
-        try {
-            browser = await puppeteer.launch({
-                // Railway/Docker ke liye default chromium use karna best hai
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-            });
-            
-            const page = await browser.newPage();
-            await page.setViewport({ width: 1280, height: 720 });
-            
-            console.log(`Navigating to: ${url}`);
-            await page.goto(url.startsWith('http') ? url : `https://${url}`, { 
-                waitUntil: 'networkidle2', 
-                timeout: 60000 
-            });
-            
-            const path = `${PUBLIC_DIR}/screen_${Date.now()}.png`; // Unique filename to avoid cache issues
-            await page.screenshot({ path });
-            
-            const file = new AttachmentBuilder(path);
-            await message.reply({ content: `✅ Result for: ${url}`, files: [file] });
-            
-            // Clean up file after sending
-            setTimeout(() => fs.unlinkSync(path), 5000);
-            waitMsg.delete().catch(() => {});
-
-        } catch (err) {
-            console.error("SCREENSHOT ERROR:", err);
-            // Discord par detailed error bhej raha hai
-            const errorReport = `❌ **Screenshot Failed!**\n\`\`\`js\n${err.message}\n\`\`\`\n*Check console for full stack trace.*`;
-            waitMsg.edit(errorReport);
-        } finally {
-            if (browser) await browser.close();
-        }
-        return;
+        if (!url) return message.reply("URL toh de bhai!");
+        await captureAndSend(message, url);
     }
 
-    // --- SMART INPUT ---
+    // Command/Input Handling
     if (activeProcess && !msg.startsWith('!') && !msg.startsWith('?')) {
-        try {
-            activeProcess.stdin.write(msg + '\n');
-            return message.react('📥');
-        } catch (err) {
-            message.reply(`❌ Input Error: ${err.message}`);
-        }
+        activeProcess.stdin.write(msg + '\n');
+        return message.react('📥');
     }
 
-    // --- TERMINAL EXECUTION ---
+    // Terminal Commands
     if (msg.startsWith('!')) {
         const cmd = msg.slice(1).trim();
         if (activeProcess) activeProcess.kill();
-
-        const live = await message.reply("⚡ Executing...");
-        
-        activeProcess = spawn('/bin/bash', ['-c', cmd], { 
-            cwd: PUBLIC_DIR, 
-            env: { ...process.env, TERM: 'xterm' } 
-        });
-
+        const live = await message.reply("⚡ Processing...");
+        activeProcess = spawn('/bin/bash', ['-c', cmd], { cwd: PUBLIC_DIR, env: { ...process.env, TERM: 'xterm' } });
         let buffer = "";
         const interval = setInterval(() => {
-            if (buffer.trim()) {
-                const clean = stripAnsi(buffer).slice(-1900);
-                live.edit(`\`\`\`\n${clean}\n\`\`\``).catch(() => {});
-            }
+            if (buffer.trim()) live.edit(`\`\`\`\n${stripAnsi(buffer).slice(-1900)}\n\`\`\``).catch(() => {});
         }, 2500);
-
-        activeProcess.stdout.on('data', (d) => buffer += d);
-        activeProcess.stderr.on('data', (d) => buffer += d);
-
-        activeProcess.on('error', (err) => {
-            message.reply(`❌ **Failed to start process:** ${err.message}`);
-        });
-
-        activeProcess.on('close', (c) => {
-            clearInterval(interval);
-            activeProcess = null;
-            message.channel.send(`✅ **Command Finished** (Exit Code: ${c})`);
-        });
-    }
-
-    // --- STATUS & STOP ---
-    if (msg === '?status') {
-        exec('df -h /app/storage', (e, out) => {
-            const s = out ? out.split('\n')[1].replace(/\s+/g, ' ').split(' ') : ["N/A","N/A","0%"];
-            message.reply(`📊 Storage: ${s[4] || '0%'} | RAM: ${(process.memoryUsage().heapUsed/1024/1024).toFixed(2)}MB`);
-        });
+        activeProcess.on('close', (c) => { clearInterval(interval); activeProcess = null; });
     }
 
     if (msg === '?stop') {
-        if (activeProcess) { 
-            activeProcess.kill('SIGKILL'); 
-            activeProcess = null; 
-            return message.reply("🛑 Process killed forcefully."); 
+        if (currentBrowser) { await currentBrowser.close(); currentBrowser = null; }
+        if (activeProcess) { activeProcess.kill('SIGKILL'); activeProcess = null; }
+        message.reply("🛑 Everything Stopped.");
+    }
+});
+
+// Button Interactions (The "No-Command" Control)
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isButton()) return;
+    await interaction.deferUpdate();
+
+    try {
+        if (interaction.customId === 'scroll_down') await currentPage.evaluate(() => window.scrollBy(0, 300));
+        if (interaction.customId === 'scroll_up') await currentPage.evaluate(() => window.scrollBy(0, -300));
+        if (interaction.customId === 'click_center') await currentPage.mouse.click(640, 360); // Middle of screen click
+        
+        if (interaction.customId === 'type_text') {
+            await interaction.followUp("Bhai, kya type karna hai? Agla message jo tum bhejoge, wo browser mein type ho jayega.");
+            const collector = interaction.channel.createMessageCollector({ filter: m => m.author.id === interaction.user.id, max: 1, time: 30000 });
+            collector.on('collect', async m => {
+                await currentPage.keyboard.type(m.content);
+                await m.react('⌨️');
+                await captureAndSend(null, null, interaction);
+            });
+            return;
         }
-        message.reply("Bhai, filhal koi process active nahi hai.");
+
+        if (interaction.customId === 'close_browser') {
+            await currentBrowser.close();
+            currentBrowser = null;
+            return interaction.followUp("🛑 Browser closed.");
+        }
+
+        await captureAndSend(null, null, interaction);
+    } catch (err) {
+        console.error(err);
     }
 });
 
