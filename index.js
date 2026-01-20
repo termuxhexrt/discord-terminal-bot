@@ -1,178 +1,127 @@
-const { Client, GatewayIntentBits, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
-const { joinVoiceChannel, VoiceConnectionStatus, createAudioPlayer, createAudioResource } = require('@discordjs/voice');
-const { spawn } = require('child_process');
+const { Client, GatewayIntentBits, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
+const { spawn, exec } = require('child_process');
 const fs = require('fs');
-const path = require('path');
-const express = require('express');
+const puppeteer = require('puppeteer');
 require('dotenv').config();
 
-// --- WEB SERVER ---
-const app = express();
-app.get('/', (req, res) => res.send('Renzu Terminal Online'));
-app.listen(process.env.PORT || 3000);
-
-// --- PUPPETEER STEALTH ---
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-puppeteer.use(StealthPlugin());
-
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds, 
-        GatewayIntentBits.GuildMessages, 
-        GatewayIntentBits.MessageContent, 
-        GatewayIntentBits.GuildVoiceStates
-    ]
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
-const STORAGE = '/app/storage';
-const PUBLIC_DIR = path.join(STORAGE, 'public_root');
-const USER_DATA = path.join(STORAGE, 'user_data');
-[PUBLIC_DIR, USER_DATA].forEach(dir => { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); });
-
-let currentBrowser = null, currentPage = null, isStreaming = false, streamInterval = null, activeProcess = null;
+const PUBLIC_DIR = '/app/storage/public_root';
+let activeProcess = null;
+let currentBrowser = null;
+let currentPage = null;
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
-// --- SMART TAGS (Captcha Bypass Ready) ---
-async function applySmartTags(page) {
-    try {
-        await page.evaluate(() => {
-            document.querySelectorAll('.renzu-tag').forEach(el => el.remove());
-            window.renzuElements = [];
-            let idCounter = 1;
-            const selectors = 'button, input, a, [role="button"], textarea, li, [role="option"], canvas, .g-recaptcha';
-            document.querySelectorAll(selectors).forEach(el => {
-                const rect = el.getBoundingClientRect();
-                if (rect.width > 2 && rect.height > 2 && window.getComputedStyle(el).visibility !== 'hidden') {
-                    const id = idCounter++;
-                    const tag = document.createElement('div');
-                    tag.className = 'renzu-tag';
-                    tag.style = `position: absolute; left: ${rect.left + window.scrollX}px; top: ${rect.top + window.scrollY}px;
-                        background: #FFD700; color: black; font-weight: bold; border: 1px solid black;
-                        padding: 1px 3px; z-index: 9999999; font-size: 12px; border-radius: 3px; pointer-events: none;`;
-                    tag.innerText = id;
-                    document.body.appendChild(tag);
-                    window.renzuElements.push({ id, x: rect.left + rect.width/2, y: rect.top + rect.height/2 });
-                }
-            });
-        });
-    } catch (e) {}
-}
+client.on('ready', () => console.log(`🚀 Renzu Remote Control Online!`));
 
-// --- VIRTUAL STREAMING ENGINE ---
-async function broadcast(message, interaction = null) {
+// Browser Control Function
+async function captureAndSend(message, url = null, interaction = null) {
     try {
-        if (!currentPage) return;
-        await applySmartTags(currentPage);
+        if (!currentBrowser) {
+            currentBrowser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
+            currentPage = await currentBrowser.newPage();
+            await currentPage.setViewport({ width: 1280, height: 720 });
+        }
+
+        if (url) {
+            await currentPage.goto(url.startsWith('http') ? url : `https://${url}`, { waitUntil: 'networkidle2', timeout: 60000 });
+        }
+
+        const path = `${PUBLIC_DIR}/remote_${Date.now()}.png`;
+        await currentPage.screenshot({ path });
+        const file = new AttachmentBuilder(path);
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('scroll_up').setLabel('⬆️').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('scroll_down').setLabel('⬇️').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('click_center').setLabel('🖱️ Click').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('type_text').setLabel('⌨️ Type').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('close_browser').setLabel('🛑 Stop').setStyle(ButtonStyle.Danger)
+        );
+
+        const payload = { content: `🌐 **Live View:** ${url || ''}`, files: [file], components: [row] };
         
-        const framePath = path.join(PUBLIC_DIR, `frame_${Date.now()}.jpg`);
-        await currentPage.screenshot({ path: framePath, type: 'jpeg', quality: 50 });
-
-        const row1 = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('sc_up').setLabel('⬆️').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('sc_down').setLabel('⬇️').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('yt_play').setLabel('⏯️ Play').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId('go_back').setLabel('⬅️ Back').setStyle(ButtonStyle.Primary)
-        );
-        const row2 = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('enter').setLabel('⏎ Enter').setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId('yt_full').setLabel('📺 Full').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('stop_all').setLabel('🛑 Stop').setStyle(ButtonStyle.Danger)
-        );
-
-        const payload = { 
-            content: `📡 **Live:** \`${currentPage.url()}\` ${isStreaming ? '🟢' : ''}`, 
-            files: [new AttachmentBuilder(framePath)], 
-            components: [row1, row2] 
-        };
-
         if (interaction) await interaction.editReply(payload);
-        else if (message?.editable) await message.edit(payload).catch(() => {});
-        else if (message) await message.reply(payload);
+        else await message.reply(payload);
 
-        if (fs.existsSync(framePath)) setTimeout(() => fs.unlinkSync(framePath), 3000);
-    } catch (err) { console.error("Broadcast Error:", err); }
+        setTimeout(() => { if (fs.existsSync(path)) fs.unlinkSync(path); }, 5000);
+    } catch (err) {
+        const errorMsg = `❌ **Browser Error:** ${err.message}`;
+        if (interaction) interaction.followUp(errorMsg);
+        else message.reply(errorMsg);
+    }
 }
 
-client.on('messageCreate', async (msg) => {
-    if (msg.author.bot) return;
-    const content = msg.content.trim();
+client.on('messageCreate', async (message) => {
+    if (message.author.bot) return;
+    const msg = message.content.trim();
 
-    // 1. TERMINAL RESTORED (!)
-    if (content.startsWith('!')) {
-        const cmd = content.slice(1);
-        const terminalMsg = await msg.reply("💻 **Executing...**");
-        let output = "";
+    if (msg.toLowerCase().startsWith('?screenshot')) {
+        const url = msg.split(' ')[1];
+        if (!url) return message.reply("URL toh de bhai!");
+        await captureAndSend(message, url);
+    }
+
+    // Command/Input Handling
+    if (activeProcess && !msg.startsWith('!') && !msg.startsWith('?')) {
+        activeProcess.stdin.write(msg + '\n');
+        return message.react('📥');
+    }
+
+    // Terminal Commands
+    if (msg.startsWith('!')) {
+        const cmd = msg.slice(1).trim();
         if (activeProcess) activeProcess.kill();
-        activeProcess = spawn(cmd, { shell: true, cwd: STORAGE });
-        
-        const updateLog = () => {
-            if (output.trim()) terminalMsg.edit(`\`\`\`bash\n${stripAnsi(output).slice(-1900)}\n\`\`\``).catch(() => {});
-        };
-        const logIntv = setInterval(updateLog, 2000);
-
-        activeProcess.stdout.on('data', d => output += d);
-        activeProcess.stderr.on('data', d => output += d);
-        activeProcess.on('close', (code) => {
-            clearInterval(logIntv);
-            updateLog();
-            terminalMsg.edit(terminalMsg.content + `\n**Process Exit:** ${code}`);
-            activeProcess = null;
-        });
-        return;
+        const live = await message.reply("⚡ Processing...");
+        activeProcess = spawn('/bin/bash', ['-c', cmd], { cwd: PUBLIC_DIR, env: { ...process.env, TERM: 'xterm' } });
+        let buffer = "";
+        const interval = setInterval(() => {
+            if (buffer.trim()) live.edit(`\`\`\`\n${stripAnsi(buffer).slice(-1900)}\n\`\`\``).catch(() => {});
+        }, 2500);
+        activeProcess.on('close', (c) => { clearInterval(interval); activeProcess = null; });
     }
 
-    // 2. VC STREAM (?stream)
-    if (content.toLowerCase() === '?stream') {
-        const vc = msg.member.voice.channel;
-        if (!vc) return msg.reply("🚨 VC join karo!");
-        if (!currentPage) return msg.reply("🚨 Pehle `?screenshot google.com` chalao.");
-
-        isStreaming = !isStreaming;
-        if (isStreaming) {
-            joinVoiceChannel({ channelId: vc.id, guildId: vc.guild.id, adapterCreator: vc.guild.voiceAdapterCreator });
-            const sMsg = await msg.reply("🚀 **Virtual Screening Active!**");
-            streamInterval = setInterval(() => broadcast(sMsg), 3800);
-        } else {
-            clearInterval(streamInterval);
-            msg.reply("🛑 Stream stopped.");
-        }
-        return;
+    if (msg === '?stop') {
+        if (currentBrowser) { await currentBrowser.close(); currentBrowser = null; }
+        if (activeProcess) { activeProcess.kill('SIGKILL'); activeProcess = null; }
+        message.reply("🛑 Everything Stopped.");
     }
-
-    // 3. TAG CLICK & TYPE
-    if (currentPage && !content.startsWith('?')) {
-        if (/^\d+$/.test(content)) {
-            const pos = await currentPage.evaluate(id => {
-                const e = window.renzuElements?.find(x => x.id === id);
-                return e ? { x: e.x, y: e.y } : null;
-            }, parseInt(content));
-            if (pos) await currentPage.mouse.click(pos.x, pos.y);
-        } else {
-            await currentPage.keyboard.type(content, { delay: 50 });
-        }
-        if (!isStreaming) await broadcast(msg);
-        return;
-    }
-
-    if (content.startsWith('?screenshot')) await broadcast(msg, null, content.split(' ')[1]);
 });
 
-// --- BUTTONS ---
-client.on('interactionCreate', async (i) => {
-    if (!i.isButton()) return;
-    await i.deferUpdate();
-    if (!currentPage) return;
+// Button Interactions (The "No-Command" Control)
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isButton()) return;
+    await interaction.deferUpdate();
 
-    if (i.customId === 'sc_down') await currentPage.evaluate(() => window.scrollBy(0, 500));
-    if (i.customId === 'yt_play') await currentPage.keyboard.press('k');
-    if (i.customId === 'stop_all') {
-        isStreaming = false; clearInterval(streamInterval);
-        await currentBrowser.close(); currentBrowser = null; currentPage = null;
-        return i.followUp("Session Terminated.");
+    try {
+        if (interaction.customId === 'scroll_down') await currentPage.evaluate(() => window.scrollBy(0, 300));
+        if (interaction.customId === 'scroll_up') await currentPage.evaluate(() => window.scrollBy(0, -300));
+        if (interaction.customId === 'click_center') await currentPage.mouse.click(640, 360); // Middle of screen click
+        
+        if (interaction.customId === 'type_text') {
+            await interaction.followUp("Bhai, kya type karna hai? Agla message jo tum bhejoge, wo browser mein type ho jayega.");
+            const collector = interaction.channel.createMessageCollector({ filter: m => m.author.id === interaction.user.id, max: 1, time: 30000 });
+            collector.on('collect', async m => {
+                await currentPage.keyboard.type(m.content);
+                await m.react('⌨️');
+                await captureAndSend(null, null, interaction);
+            });
+            return;
+        }
+
+        if (interaction.customId === 'close_browser') {
+            await currentBrowser.close();
+            currentBrowser = null;
+            return interaction.followUp("🛑 Browser closed.");
+        }
+
+        await captureAndSend(null, null, interaction);
+    } catch (err) {
+        console.error(err);
     }
-    if (!isStreaming) await broadcast(null, i);
 });
 
 client.login(process.env.TOKEN);
