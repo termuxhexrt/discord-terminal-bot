@@ -1,37 +1,60 @@
 const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
 const { spawn } = require('child_process');
 const express = require('express');
-const path = require('path'); // Added for path resolution
+const path = require('path');
+const fs = require('fs'); // File System added for permanent storage
 require('dotenv').config();
 
 const app = express();
-app.get('/', (req, res) => res.send('Renzu Ultra-Live OS 🚀'));
+app.get('/', (req, res) => res.send('Renzu Persistent OS 🚀'));
 app.listen(process.env.PORT || 3000);
 
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
-// --- PERSISTENCE SETUP ---
-let currentDir = process.cwd(); // Tracks global directory across commands
+// --- PERMANENT STORAGE LOGIC ---
+const STATE_FILE = path.join(__dirname, 'state.json');
+
+let state = {
+    currentDir: process.cwd(),
+    activeId: 1,
+    buffers: { 1: "", 2: "", 3: "", 4: "" }
+};
+
+// Load saved data on startup
+if (fs.existsSync(STATE_FILE)) {
+    try {
+        const data = JSON.parse(fs.readFileSync(STATE_FILE));
+        state = { ...state, ...data };
+        process.chdir(state.currentDir);
+    } catch (e) { console.log("State load error, using defaults."); }
+}
+
+function saveState() {
+    fs.writeFileSync(STATE_FILE, JSON.stringify({
+        currentDir: state.currentDir,
+        activeId: state.activeId,
+        buffers: state.buffers
+    }, null, 2));
+}
 
 let terminals = {
-    1: { process: null, buffer: "", message: null, lastSent: "" },
-    2: { process: null, buffer: "", message: null, lastSent: "" },
-    3: { process: null, buffer: "", message: null, lastSent: "" },
-    4: { process: null, buffer: "", message: null, lastSent: "" }
+    1: { process: null, message: null, lastSent: "" },
+    2: { process: null, message: null, lastSent: "" },
+    3: { process: null, message: null, lastSent: "" },
+    4: { process: null, message: null, lastSent: "" }
 };
-let activeId = 1;
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
 function getTerminalButtons() {
     return [
         new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('sw_1').setLabel('T1').setStyle(activeId === 1 ? ButtonStyle.Primary : ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('sw_2').setLabel('T2').setStyle(activeId === 2 ? ButtonStyle.Primary : ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('sw_3').setLabel('T3').setStyle(activeId === 3 ? ButtonStyle.Primary : ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('sw_4').setLabel('T4').setStyle(activeId === 4 ? ButtonStyle.Primary : ButtonStyle.Secondary)
+            new ButtonBuilder().setCustomId('sw_1').setLabel('T1').setStyle(state.activeId === 1 ? ButtonStyle.Primary : ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('sw_2').setLabel('T2').setStyle(state.activeId === 2 ? ButtonStyle.Primary : ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('sw_3').setLabel('T3').setStyle(state.activeId === 3 ? ButtonStyle.Primary : ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('sw_4').setLabel('T4').setStyle(state.activeId === 4 ? ButtonStyle.Primary : ButtonStyle.Secondary)
         ),
         new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('kill_term').setLabel('🛑 Kill Active').setStyle(ButtonStyle.Danger),
@@ -46,62 +69,62 @@ client.on('messageCreate', async (message) => {
 
     if (msg === '?help') {
         return message.reply({ 
-            embeds: [new EmbedBuilder().setTitle("🖥️ Renzu OS - Ultra Live").setDescription("`! <cmd>` for Live Stream. Interaction is direct.")], 
+            embeds: [new EmbedBuilder().setTitle("🖥️ Renzu OS - Persistent").setDescription("`! <cmd>` for Live Stream. Settings are saved permanently.")], 
             components: getTerminalButtons() 
         });
     }
 
     if (msg === '?status') {
         let status = Object.keys(terminals).map(id => `T${id}: ${terminals[id].process ? '🔴' : '🟢'}`).join(' | ');
-        return message.reply(`📊 **System:** ${status}\nFocus: **Terminal ${activeId}**\n📁 **Dir:** \`${currentDir}\``);
+        return message.reply(`📊 **System:** ${status}\nFocus: **Terminal ${state.activeId}**\n📁 **Saved Dir:** \`${state.currentDir}\``);
     }
 
     if (msg.startsWith('!')) {
         let cmd = msg.startsWith('! ') ? msg.slice(2) : msg.slice(1);
         if (!cmd) return;
 
-        // --- CD COMMAND PERSISTENCE FIX ---
+        // --- PERSISTENT CD FIX ---
         if (cmd.startsWith('cd ')) {
-            const targetDir = cmd.slice(3).trim();
+            const target = cmd.slice(3).trim();
             try {
-                const newPath = path.resolve(currentDir, targetDir);
-                process.chdir(newPath); // Actual directory change
-                currentDir = process.cwd(); // Update tracker
-                return message.reply(`📂 **Directory Changed:** \`${currentDir}\``);
+                const newPath = path.resolve(state.currentDir, target);
+                process.chdir(newPath);
+                state.currentDir = process.cwd();
+                saveState(); // Folder yaad rakhega
+                return message.reply(`📂 **Directory Saved:** \`${state.currentDir}\``);
             } catch (err) {
-                return message.reply(`❌ **Error:** Directory not found!`);
+                return message.reply(`❌ **Error:** Folder not found.`);
             }
         }
 
-        // FORCE PROGRESS FIX
         if (cmd.includes('git clone') && !cmd.includes('--progress')) {
             cmd = cmd.replace('git clone', 'git clone --progress');
         }
 
-        if (terminals[activeId].process) return message.reply(`⚠️ T${activeId} is busy!`);
+        if (terminals[state.activeId].process) return message.reply(`⚠️ T${state.activeId} busy!`);
 
-        terminals[activeId].buffer = `> ${cmd}\n`;
-        terminals[activeId].message = await message.reply({
-            content: `🖥️ **Ultra-Live T${activeId}:**\n\`\`\`bash\nConnecting to Stream...\n\`\`\``,
+        state.buffers[state.activeId] = `> ${cmd}\n`;
+        terminals[state.activeId].message = await message.reply({
+            content: `🖥️ **Persistent T${state.activeId}:**\n\`\`\`bash\nStreaming Live...\n\`\`\``,
             components: getTerminalButtons()
         });
 
-        // Run command with persistence (cwd: currentDir)
-        terminals[activeId].process = spawn(`stdbuf -oL -eL ${cmd}`, { 
+        terminals[state.activeId].process = spawn(`stdbuf -oL -eL ${cmd}`, { 
             shell: true,
-            cwd: currentDir, // <--- This keeps the folder persistent
+            cwd: state.currentDir,
             env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1', LANG: 'en_US.UTF-8' } 
         });
 
         const updateUI = async () => {
-            let t = terminals[activeId];
+            let active = state.activeId;
+            let t = terminals[active];
             if (!t.message) return;
             
-            let output = stripAnsi(t.buffer).slice(-1900);
+            let output = stripAnsi(state.buffers[active]).slice(-1900);
             if (output !== t.lastSent && output.length > 0) {
                 t.lastSent = output;
                 await t.message.edit({
-                    content: `🖥️ **Live Stream T${activeId}:**\n\`\`\`bash\n${output}\n\`\`\``,
+                    content: `🖥️ **Live Stream T${active}:**\n\`\`\`bash\n${output}\n\`\`\``,
                     components: getTerminalButtons()
                 }).catch(() => {});
             }
@@ -109,36 +132,41 @@ client.on('messageCreate', async (message) => {
 
         const streamInterval = setInterval(updateUI, 1200);
 
-        terminals[activeId].process.stdout.on('data', (d) => { terminals[activeId].buffer += d.toString(); });
-        terminals[activeId].process.stderr.on('data', (d) => { terminals[activeId].buffer += d.toString(); });
+        terminals[state.activeId].process.stdout.on('data', (d) => { state.buffers[state.activeId] += d.toString(); });
+        terminals[state.activeId].process.stderr.on('data', (d) => { state.buffers[state.activeId] += d.toString(); });
 
-        terminals[activeId].process.on('close', (code) => {
+        terminals[state.activeId].process.on('close', (code) => {
             clearInterval(streamInterval);
+            saveState(); // Save buffer on finish
             setTimeout(updateUI, 500);
-            message.channel.send(`🏁 **T${activeId} Execution Finished.**`);
-            terminals[activeId].process = null;
+            message.channel.send(`🏁 **T${state.activeId} Done.** (Dir: \`${path.basename(state.currentDir)}\`)`);
+            terminals[state.activeId].process = null;
         });
         return;
     }
 
-    if (terminals[activeId].process && !msg.startsWith('?')) {
-        terminals[activeId].process.stdin.write(msg + '\n');
+    if (terminals[state.activeId].process && !msg.startsWith('?')) {
+        terminals[state.activeId].process.stdin.write(msg + '\n');
         return message.react('✅');
     }
 });
 
 client.on('interactionCreate', async (i) => {
     if (!i.isButton()) return;
-    if (i.customId.startsWith('sw_')) {
-        activeId = parseInt(i.customId.split('_')[1]);
-        await i.update({ content: `🔄 Focus Switched: **Terminal ${activeId}**`, components: getTerminalButtons() });
-    } else if (i.customId === 'kill_term' && terminals[activeId].process) {
-        terminals[activeId].process.kill();
-        terminals[activeId].process = null;
-        await i.update({ content: `🛑 T${activeId} Killed`, components: getTerminalButtons() });
-    } else if (i.customId === 'clear_term') {
-        terminals[activeId].buffer = "";
-        await i.update({ content: `🧹 T${activeId} Buffer Cleared`, components: getTerminalButtons() });
+    const bid = i.customId;
+
+    if (bid.startsWith('sw_')) {
+        state.activeId = parseInt(bid.split('_')[1]);
+        saveState();
+        await i.update({ content: `🔄 Focus: **Terminal ${state.activeId}**`, components: getTerminalButtons() });
+    } else if (bid === 'kill_term' && terminals[state.activeId].process) {
+        terminals[state.activeId].process.kill();
+        terminals[state.activeId].process = null;
+        await i.update({ content: `🛑 T${state.activeId} Killed`, components: getTerminalButtons() });
+    } else if (bid === 'clear_term') {
+        state.buffers[state.activeId] = "";
+        saveState();
+        await i.update({ content: `🧹 T${state.activeId} Screen Cleared`, components: getTerminalButtons() });
     }
 });
 
