@@ -5,7 +5,7 @@ const express = require('express');
 const path = require('path');
 require('dotenv').config();
 
-// --- SERVER SETUP ---
+// --- SERVER SETUP (Railway/Uptime) ---
 const app = express();
 app.get('/', (req, res) => res.send('Renzu OS is Active 🚀'));
 app.listen(process.env.PORT || 3000);
@@ -34,6 +34,7 @@ const USER_DATA_DIR = path.join(process.cwd(), 'storage_data');
 let activeProcess = null;
 let currentBrowser = null;
 let currentPage = null;
+let terminalMsg = null; // Output message tracker
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
@@ -75,77 +76,75 @@ async function captureAndSend(message, url = null, interaction = null) {
             currentPage = (await currentBrowser.pages())[0];
             await currentPage.setViewport({ width: 1280, height: 720 });
         }
-
         if (url) await currentPage.goto(url.startsWith('http') ? url : `https://${url}`, { waitUntil: 'networkidle2' });
-        
         await applySmartTags(currentPage);
         const imgPath = path.join(PUBLIC_DIR, `shot_${Date.now()}.jpg`);
         await currentPage.screenshot({ path: imgPath, type: 'jpeg', quality: 60 });
-
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('close_browser').setLabel('🛑 Close Browser').setStyle(ButtonStyle.Danger)
         );
-
         const payload = { 
             content: `🌐 **Browser Active:** \`${currentPage.url()}\``, 
             files: [new AttachmentBuilder(imgPath)], 
             components: [row] 
         };
-
         if (interaction) await interaction.editReply(payload);
         else if (message) await message.reply(payload);
-
         if (fs.existsSync(imgPath)) setTimeout(() => fs.unlinkSync(imgPath), 5000);
     } catch (err) { console.error(err); }
 }
 
-// --- MESSAGE HANDLER ---
+// --- MAIN MESSAGE HANDLER ---
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const msg = message.content.trim();
 
-    // 1. HELP COMMAND
-    if (msg === '!help') {
+    // 1. ?HELP COMMAND
+    if (msg === '?help') {
         const helpEmbed = new EmbedBuilder()
             .setTitle("🖥️ Renzu OS Help Menu")
             .setColor("#00ff00")
+            .setDescription("Aapka Virtual Terminal aur Browser taiyaar hai!")
             .addFields(
-                { name: '💻 Terminal', value: '`! <cmd>` (e.g. `! ls`), `!stop`' },
-                { name: '🌐 Browser', value: '`?screenshot <url>`, `?close`' },
-                { name: '📊 System', value: '`!status`' }
+                { name: '💻 Terminal', value: '`! <cmd>` (e.g. `! ls`), `!stop` (Kill current process)' },
+                { name: '🌐 Browser', value: '`?screenshot <url>`, `?close` (Button se bhi hota hai)' },
+                { name: '📊 System', value: '`?status` (Bot ki health check karne ke liye)' }
             );
         return message.reply({ embeds: [helpEmbed] });
     }
 
-    // 2. STATUS COMMAND
-    if (msg === '!status') {
-        return message.reply(`✅ **Renzu OS is Online**\n📂 **Terminal:** ${activeProcess ? 'Busy 🔴' : 'Idle 🟢'}\n🌐 **Browser:** ${currentBrowser ? 'Active 🔵' : 'Closed ⚪'}`);
+    // 2. ?STATUS COMMAND
+    if (msg === '?status') {
+        return message.reply(`✅ **Renzu OS Status**\n📡 **Server:** Online\n📂 **Process:** ${activeProcess ? 'Running 🔴' : 'Idle 🟢'}\n🌍 **Browser:** ${currentBrowser ? 'Active 🔵' : 'Offline ⚪'}`);
     }
 
-    // 3. STOP COMMAND
+    // 3. !STOP COMMAND
     if (msg === '!stop' || msg === '!exit') {
         if (activeProcess) {
             activeProcess.kill();
             activeProcess = null;
-            return message.reply("🛑 **Process Terminated.**");
+            return message.reply("🛑 **Process Killed Successfully.**");
         }
-        return message.reply("⚠️ Koi process nahi chal raha.");
+        return message.reply("⚠️ Koi process nahi chal raha hai.");
     }
 
-    // 4. TERMINAL INPUT (Jab Tool chal raha ho)
+    // 4. INTERACTIVE INPUT (Terminal ON hone par)
     if (activeProcess && !msg.startsWith('!') && !msg.startsWith('?')) {
         try {
             activeProcess.stdin.write(msg + '\n');
-            return message.react('📩');
+            return message.react('✅');
         } catch (err) {
             activeProcess = null;
+            return message.reply("🚨 Input failed. Process dead ho gaya.");
         }
     }
 
     // 5. NEW TERMINAL COMMAND
-    if (msg.startsWith('! ')) {
-        const cmd = msg.slice(2);
-        const terminalMsg = await message.reply("⏳ **Executing...**");
+    if (msg.startsWith('!')) {
+        const cmd = msg.startsWith('! ') ? msg.slice(2) : msg.slice(1);
+        if (!cmd) return;
+        
+        terminalMsg = await message.reply("⏳ **Initializing...**");
         let outputBuffer = "";
 
         activeProcess = spawn(cmd, { 
@@ -153,23 +152,24 @@ client.on('messageCreate', async (message) => {
             env: { ...process.env, TERM: 'xterm-color' } 
         });
 
-        const updateUI = () => {
-            if (outputBuffer.trim()) {
-                const cleanText = stripAnsi(outputBuffer).slice(-1900);
-                terminalMsg.edit(`\`\`\`bash\n${cleanText}\n\`\`\``).catch(() => {});
+        const updateUI = (force = false) => {
+            const cleanText = stripAnsi(outputBuffer).slice(-1900);
+            if (cleanText.trim() || force) {
+                const finalContent = cleanText.trim() ? `\`\`\`bash\n${cleanText}\n\`\`\`` : "⚠️ No output received yet...";
+                terminalMsg.edit(finalContent).catch(() => {});
             }
         };
 
-        const interval = setInterval(updateUI, 2000);
+        const interval = setInterval(() => updateUI(), 2000);
 
         activeProcess.stdout.on('data', d => { outputBuffer += d.toString(); });
         activeProcess.stderr.on('data', d => { outputBuffer += d.toString(); });
 
         activeProcess.on('close', (code) => {
             clearInterval(interval);
-            updateUI();
-            const status = code === 0 ? "✅ Done" : `❌ Failed (Code ${code})`;
-            terminalMsg.edit(terminalMsg.content + `\n**Status:** ${status}`).catch(() => {});
+            updateUI(true);
+            const statusEmoji = code === 0 ? "✅ Done" : `❌ Error (Code ${code})`;
+            terminalMsg.reply(`🛑 **Process Finished:** ${statusEmoji}`).catch(() => {});
             activeProcess = null;
         });
         return;
@@ -178,7 +178,7 @@ client.on('messageCreate', async (message) => {
     // 6. BROWSER COMMANDS
     if (msg.startsWith('?screenshot')) {
         const url = msg.split(' ')[1];
-        if (!url) return message.reply("URL toh de bhai! Example: `?screenshot google.com` ");
+        if (!url) return message.reply("Bhai URL toh likh! Jaise: `?screenshot google.com` ");
         return captureAndSend(message, url);
     }
 
@@ -198,13 +198,13 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-// Button Handler
+// Button Interaction
 client.on('interactionCreate', async (i) => {
     if (!i.isButton()) return;
     if (i.customId === 'close_browser' && currentBrowser) {
         await currentBrowser.close();
         currentBrowser = null; currentPage = null;
-        await i.update({ content: "🛑 **Browser Closed.**", components: [], files: [] });
+        await i.update({ content: "🛑 **Browser Session Closed.**", components: [], files: [] });
     }
 });
 
