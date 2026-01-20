@@ -5,13 +5,13 @@ const express = require('express');
 const https = require('https'); 
 require('dotenv').config();
 
-// --- EXPRESS SERVER FOR RAILWAY ---
+// --- EXPRESS SERVER ---
 const app = express();
 const port = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('Renzu OS is running!'));
-app.listen(port, () => console.log(`Express server listening on port ${port}`));
+app.get('/', (req, res) => res.send('Renzu OS is alive!'));
+app.listen(port, () => console.log(`Server on port ${port}`));
 
-// --- STEALTH BYPASS SETUP ---
+// --- STEALTH SETUP ---
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
@@ -21,10 +21,14 @@ const client = new Client({
 });
 
 const PUBLIC_DIR = '/app/storage/public_root';
-let activeProcess = null, currentBrowser = null, currentPage = null;
+const USER_DATA_DIR = '/app/storage/user_data'; // Cookies yahan save hongi
 
-// Ensure directory exists on startup
-if (!fs.existsSync(PUBLIC_DIR)) fs.mkdirSync(PUBLIC_DIR, { recursive: true });
+// Directories creation
+[PUBLIC_DIR, USER_DATA_DIR].forEach(dir => {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+});
+
+let activeProcess = null, currentBrowser = null, currentPage = null;
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
@@ -38,7 +42,7 @@ function getPublicIP() {
     });
 }
 
-// --- ERROR-PROOF SMART TAGS ---
+// --- SMART TAGS LOGIC ---
 async function applySmartTags(page) {
     try {
         await page.waitForSelector('body', { timeout: 5000 }).catch(() => {});
@@ -78,25 +82,27 @@ async function applySmartTags(page) {
 async function captureAndSend(message, url = null, interaction = null) {
     try {
         if (!currentBrowser) {
-           currentBrowser = await puppeteer.launch({ 
-    executablePath: '/usr/bin/chromium',
-    headless: "new",
-    userDataDir: './user_data_dir', // <--- Ye line cookies save karegi
-    args: [
-        '--no-sandbox', 
-        '--disable-setuid-sandbox', 
-        '--disable-blink-features=AutomationControlled',
-        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
-    ] 
-});
-            currentPage = await currentBrowser.newPage();
+            currentBrowser = await puppeteer.launch({ 
+                executablePath: '/usr/bin/chromium',
+                headless: "new",
+                userDataDir: USER_DATA_DIR, // Persistence added!
+                args: [
+                    '--no-sandbox', 
+                    '--disable-setuid-sandbox', 
+                    '--disable-blink-features=AutomationControlled'
+                ] 
+            });
+            const pages = await currentBrowser.pages();
+            currentPage = pages.length > 0 ? pages[0] : await currentBrowser.newPage();
             await currentPage.setViewport({ width: 1280, height: 720 });
         }
-        if (url) await currentPage.goto(url.startsWith('http') ? url : `https://${url}`, { waitUntil: 'networkidle0', timeout: 60000 });
+        
+        if (url) await currentPage.goto(url.startsWith('http') ? url : `https://${url}`, { waitUntil: 'networkidle2', timeout: 60000 });
+        
         await applySmartTags(currentPage);
         const path = `${PUBLIC_DIR}/smart_${Date.now()}.png`;
         await currentPage.screenshot({ path });
-        await currentPage.evaluate(() => document.querySelectorAll('.renzu-tag').forEach(el => el.remove())).catch(() => {});
+        
         const row1 = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('scroll_up').setLabel('⬆️').setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId('scroll_down').setLabel('⬇️').setStyle(ButtonStyle.Secondary),
@@ -105,16 +111,19 @@ async function captureAndSend(message, url = null, interaction = null) {
         );
         const row2 = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('backspace_key').setLabel('⌫ BS').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('clear_input').setLabel('✂️ Cut').setStyle(ButtonStyle.Danger),
             new ButtonBuilder().setCustomId('close_browser').setLabel('🛑 Stop').setStyle(ButtonStyle.Danger)
         );
-        const payload = { content: `🌐 **URL:** \`${await currentPage.url()}\``, files: [new AttachmentBuilder(path)], components: [row1, row2] };
+
+        const payload = { content: `🌐 **URL:** \`${currentPage.url()}\``, files: [new AttachmentBuilder(path)], components: [row1, row2] };
+        
         if (interaction) await interaction.editReply(payload);
         else if (message) await message.reply(payload);
+        
         if (fs.existsSync(path)) setTimeout(() => fs.unlinkSync(path), 5000);
     } catch (err) {
         console.error(err);
-        if (message) message.reply(`❌ **Error:** ${err.message}`);
+        const msg = interaction || message;
+        if (msg) msg.channel.send(`❌ **Error:** ${err.message}`);
     }
 }
 
@@ -122,43 +131,29 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const msg = message.content.trim();
 
-    // --- TERMINAL LOGIC FIX ---
+    // TERMINAL
     if (msg.startsWith('!')) {
         const cmd = msg.slice(1);
-        const live = await message.reply("⚡ **Executing Command...**");
+        const live = await message.reply("⚡ **Executing...**");
         let buffer = "";
-
         if (activeProcess) activeProcess.kill();
-        
-        // Using shell: true and correct environment for output stream
         activeProcess = spawn(cmd, { shell: true, cwd: PUBLIC_DIR, env: { ...process.env, TERM: 'xterm-256color' } });
-
-        const updateUI = () => {
-            if (buffer.trim()) {
-                live.edit(`\`\`\`bash\n${stripAnsi(buffer).slice(-1900)}\n\`\`\``).catch(() => {});
-            }
-        };
-
-        const intv = setInterval(updateUI, 2000);
-
-        activeProcess.stdout.on('data', d => { buffer += d.toString(); });
-        activeProcess.stderr.on('data', d => { buffer += d.toString(); });
-        
+        const intv = setInterval(() => {
+            if (buffer.trim()) live.edit(`\`\`\`bash\n${stripAnsi(buffer).slice(-1900)}\n\`\`\``).catch(() => {});
+        }, 2000);
+        activeProcess.stdout.on('data', d => buffer += d.toString());
+        activeProcess.stderr.on('data', d => buffer += d.toString());
         activeProcess.on('close', (code) => {
             clearInterval(intv);
-            setTimeout(() => {
-                const finalOutput = buffer.trim() ? `\`\`\`bash\n${stripAnsi(buffer).slice(-1900)}\n\`\`\`` : "✅ Command executed (No output returned).";
-                live.edit(`${finalOutput}\n**Exit Code:** ${code}`).catch(() => {});
-                activeProcess = null;
-            }, 1000);
+            live.edit(`\`\`\`bash\n${stripAnsi(buffer).slice(-1900)}\n\`\`\`\n**Exit Code:** ${code}`).catch(() => {});
+            activeProcess = null;
         });
         return;
     }
 
     if (msg.toLowerCase() === '?status') {
         const ip = await getPublicIP();
-        const embed = new EmbedBuilder().setTitle('📊 Status').addFields({ name: '🌐 IP', value: `\`${ip}\``, inline: true }).setColor(0x00AE86);
-        return message.reply({ embeds: [embed] });
+        return message.reply(`🌐 **IP:** \`${ip}\` | 🟢 **Status:** Online`);
     }
 
     if (currentPage && !msg.startsWith('?')) {
@@ -168,11 +163,11 @@ client.on('messageCreate', async (message) => {
                 return found ? { x: found.x, y: found.y } : null;
             }, parseInt(msg));
             if (coords) {
-                await currentPage.mouse.click(coords.x, coords.y, { delay: 100 });
+                await currentPage.mouse.click(coords.x, coords.y);
                 return setTimeout(() => captureAndSend(message), 1500);
             }
         }
-        await currentPage.keyboard.type(msg, { delay: 60 });
+        await currentPage.keyboard.type(msg, { delay: 50 });
         return setTimeout(() => captureAndSend(message), 1000);
     }
 
@@ -182,7 +177,7 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
     await interaction.deferUpdate();
-    if (!currentPage) return interaction.followUp({ content: "❌ Session expired.", ephemeral: true });
+    if (!currentPage) return;
 
     if (interaction.customId === 'scroll_down') await currentPage.evaluate(() => window.scrollBy(0, 500));
     if (interaction.customId === 'scroll_up') await currentPage.evaluate(() => window.scrollBy(0, -500));
@@ -196,5 +191,4 @@ client.on('interactionCreate', async interaction => {
     await captureAndSend(null, null, interaction);
 });
 
-process.on('unhandledRejection', error => console.error('Unhandled Promise Rejection:', error));
 client.login(process.env.TOKEN);
