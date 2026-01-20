@@ -13,7 +13,7 @@ const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
-// --- DISK PERSISTENCE ---
+// --- ROBUST PERSISTENCE ---
 const STATE_FILE = './state.json';
 let state = {
     currentDir: process.cwd(),
@@ -26,7 +26,7 @@ if (fs.existsSync(STATE_FILE)) {
         const saved = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
         state = { ...state, ...saved };
         if (fs.existsSync(state.currentDir)) process.chdir(state.currentDir);
-    } catch (e) { console.log("State reset"); }
+    } catch (e) { console.log("State Reset"); }
 }
 
 function saveState() {
@@ -35,88 +35,96 @@ function saveState() {
 }
 
 let terminals = {
-    1: { process: null, message: null },
-    2: { process: null, message: null },
-    3: { process: null, message: null },
-    4: { process: null, message: null }
+    1: { process: null, message: null, lastSent: "" },
+    2: { process: null, message: null, lastSent: "" },
+    3: { process: null, message: null, lastSent: "" },
+    4: { process: null, message: null, lastSent: "" }
 };
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
 function getTerminalButtons() {
-    return [
-        new ActionRowBuilder().addComponents(
-            [1, 2, 3, 4].map(id => 
-                new ButtonBuilder().setCustomId(`sw_${id}`).setLabel(`T${id}`).setStyle(state.activeId === id ? ButtonStyle.Primary : ButtonStyle.Secondary)
-            )
-        ),
-        new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('kill_term').setLabel('🛑 Kill').setStyle(ButtonStyle.Danger),
-            new ButtonBuilder().setCustomId('clear_term').setLabel('🧹 Clear').setStyle(ButtonStyle.Success)
+    const row1 = new ActionRowBuilder().addComponents(
+        [1, 2, 3, 4].map(id => 
+            new ButtonBuilder()
+                .setCustomId(`sw_${id}`)
+                .setLabel(`T${id}`)
+                .setStyle(state.activeId === id ? ButtonStyle.Primary : ButtonStyle.Secondary)
         )
-    ];
+    );
+    const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('kill_term').setLabel('🛑 Kill Active').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('clear_term').setLabel('🧹 Clear Screen').setStyle(ButtonStyle.Success)
+    );
+    return [row1, row2];
 }
 
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const msg = message.content.trim();
 
-    if (msg === '?status') {
-        return message.reply(`✅ **Active:** T${state.activeId} | 📂 **Dir:** \`${process.cwd()}\``);
-    }
+    // Help & Status
+    if (msg === '?help') return message.reply({ content: "🖥️ **Renzu OS Commands:** `! <cmd>`, `?status`, `?help`", components: getTerminalButtons() });
+    if (msg === '?status') return message.reply(`📊 **T${state.activeId}** | 📂 \`${process.cwd()}\` | Shell: \`${process.env.SHELL || 'bash'}\``);
 
     if (msg.startsWith('!')) {
         let cmd = msg.startsWith('! ') ? msg.slice(2) : msg.slice(1);
         if (!cmd) return;
 
-        // FIXED CD LOGIC
+        // CD PERSISTENCE
         if (cmd.startsWith('cd ')) {
             try {
-                process.chdir(path.resolve(process.cwd(), cmd.slice(3).trim()));
+                const newPath = path.resolve(process.cwd(), cmd.slice(3).trim());
+                process.chdir(newPath);
                 saveState();
-                return message.reply(`📂 **Path:** \`${process.cwd()}\``);
-            } catch (e) { return message.reply("❌ Folder not found"); }
+                return message.reply(`📂 **Directory:** \`${process.cwd()}\``);
+            } catch (e) { return message.reply("❌ Folder not found!"); }
         }
 
         const tid = state.activeId;
-        if (terminals[tid].process) return message.reply(`⚠️ T${tid} Busy!`);
+        if (terminals[tid].process) return message.reply(`⚠️ T${tid} is already running a process!`);
 
-        // Force reset buffer for new command
+        // Start Execution
         state.buffers[tid] = `> ${cmd}\n`;
         terminals[tid].message = await message.reply({
-            content: `🖥️ **T${tid} Starting...**`,
+            content: `🖥️ **T${tid} Live Stream:**\n\`\`\`bash\nInitializing...\n\`\`\``,
             components: getTerminalButtons()
         });
 
-        // Use standard spawn without stdbuf for basic commands to avoid "Executing..." hang
-        const shellCmd = cmd.includes('git') || cmd.includes('bash') ? `stdbuf -oL -eL ${cmd}` : cmd;
-
-        terminals[tid].process = spawn(shellCmd, {
+        // Use stdbuf for EVERYTHING to ensure no "Executing..." hang
+        terminals[tid].process = spawn(`stdbuf -oL -eL ${cmd}`, {
             shell: true,
             cwd: process.cwd(),
             env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1' }
         });
 
-        const updateLoop = setInterval(async () => {
-            let output = stripAnsi(state.buffers[tid]).slice(-1900);
-            if (output) {
-                await terminals[tid].message.edit(`🖥️ **T${tid} Live:**\n\`\`\`bash\n${output}\n\`\`\``).catch(() => {});
+        const updateUI = async () => {
+            const output = stripAnsi(state.buffers[tid]).slice(-1950);
+            if (output && output !== terminals[tid].lastSent) {
+                terminals[tid].lastSent = output;
+                await terminals[tid].message.edit({
+                    content: `🖥️ **T${tid} Live Stream:**\n\`\`\`bash\n${output}\n\`\`\``,
+                    components: getTerminalButtons()
+                }).catch(() => {});
             }
-        }, 1500);
+        };
 
-        terminals[tid].process.stdout.on('data', (d) => { state.buffers[tid] += d.toString(); });
-        terminals[tid].process.stderr.on('data', (d) => { state.buffers[tid] += d.toString(); });
+        const timer = setInterval(updateUI, 1000);
+
+        terminals[tid].process.stdout.on('data', (data) => { state.buffers[tid] += data.toString(); });
+        terminals[tid].process.stderr.on('data', (data) => { state.buffers[tid] += data.toString(); });
 
         terminals[tid].process.on('close', (code) => {
-            clearInterval(updateLoop);
+            clearInterval(timer);
             saveState();
-            message.channel.send(`🏁 **T${tid} Finished** (Code: ${code})`);
+            setTimeout(updateUI, 500); // Final update
+            message.channel.send(`🏁 **T${tid} Execution Finished** (Code: ${code})`);
             terminals[tid].process = null;
         });
         return;
     }
 
-    // Direct input interaction
+    // Direct Interaction
     if (terminals[state.activeId].process && !msg.startsWith('?')) {
         terminals[state.activeId].process.stdin.write(msg + '\n');
         return message.react('✅');
@@ -125,20 +133,20 @@ client.on('messageCreate', async (message) => {
 
 client.on('interactionCreate', async (i) => {
     if (!i.isButton()) return;
-    const action = i.customId;
+    const bid = i.customId;
 
-    if (action.startsWith('sw_')) {
-        state.activeId = parseInt(action.split('_')[1]);
+    if (bid.startsWith('sw_')) {
+        state.activeId = parseInt(bid.split('_')[1]);
         saveState();
-        await i.update({ content: `🔄 Focused: **T${state.activeId}**`, components: getTerminalButtons() });
-    } else if (action === 'kill_term' && terminals[state.activeId].process) {
+        await i.update({ content: `🔄 Focus Switched: **T${state.activeId}**`, components: getTerminalButtons() });
+    } else if (bid === 'kill_term' && terminals[state.activeId].process) {
         terminals[state.activeId].process.kill('SIGKILL');
         terminals[state.activeId].process = null;
         await i.update({ content: `🛑 T${state.activeId} Force Killed`, components: getTerminalButtons() });
-    } else if (action === 'clear_term') {
+    } else if (bid === 'clear_term') {
         state.buffers[state.activeId] = "";
         saveState();
-        await i.update({ content: `🧹 T${state.activeId} Cleared`, components: getTerminalButtons() });
+        await i.update({ content: `🧹 T${state.activeId} Buffer Cleared`, components: getTerminalButtons() });
     }
 });
 
