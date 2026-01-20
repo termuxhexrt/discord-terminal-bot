@@ -1,21 +1,15 @@
-const { Client, GatewayIntentBits, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
 const { spawn } = require('child_process');
-const fs = require('fs');
 const express = require('express');
-const path = require('path');
 require('dotenv').config();
 
-// --- SERVER SETUP ---
+// --- SERVER ---
 const app = express();
-app.get('/', (req, res) => res.send('Renzu Multi-OS is LIVE 🚀'));
+app.get('/', (req, res) => res.send('Renzu Live Terminal Active 🚀'));
 app.listen(process.env.PORT || 3000);
 
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
-    ]
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
 // --- MULTI-TERMINAL SYSTEM ---
@@ -29,19 +23,19 @@ let activeId = 1;
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
-// --- UI BUTTONS ---
 function getTerminalButtons() {
-    const row1 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('sw_1').setLabel('T1').setStyle(activeId === 1 ? ButtonStyle.Primary : ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('sw_2').setLabel('T2').setStyle(activeId === 2 ? ButtonStyle.Primary : ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('sw_3').setLabel('T3').setStyle(activeId === 3 ? ButtonStyle.Primary : ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('sw_4').setLabel('T4').setStyle(activeId === 4 ? ButtonStyle.Primary : ButtonStyle.Secondary)
-    );
-    const row2 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('kill_term').setLabel('🛑 Kill Active').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId('clear_term').setLabel('🧹 Clear Screen').setStyle(ButtonStyle.Success)
-    );
-    return [row1, row2];
+    return [
+        new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('sw_1').setLabel('T1').setStyle(activeId === 1 ? ButtonStyle.Primary : ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('sw_2').setLabel('T2').setStyle(activeId === 2 ? ButtonStyle.Primary : ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('sw_3').setLabel('T3').setStyle(activeId === 3 ? ButtonStyle.Primary : ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('sw_4').setLabel('T4').setStyle(activeId === 4 ? ButtonStyle.Primary : ButtonStyle.Secondary)
+        ),
+        new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('kill_term').setLabel('🛑 Kill Active').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId('clear_term').setLabel('🧹 Clear Screen').setStyle(ButtonStyle.Success)
+        )
+    ];
 }
 
 client.on('messageCreate', async (message) => {
@@ -50,109 +44,83 @@ client.on('messageCreate', async (message) => {
 
     // 1. HELP & STATUS
     if (msg === '?help') {
-        const help = new EmbedBuilder()
-            .setTitle("⌨️ Renzu OS - Live Terminal")
-            .setColor("#00FF00")
-            .setDescription(`Focus: **Terminal ${activeId}**`)
-            .addFields(
-                { name: '🚀 Execute', value: '`! <cmd>` (Live update fixed)' },
-                { name: '⌨️ Interact', value: 'Just type numbers/text' },
-                { name: '🔄 Switch', value: 'Use T1-T4 buttons' }
-            );
-        return message.reply({ embeds: [help], components: getTerminalButtons() });
+        return message.reply({ 
+            embeds: [new EmbedBuilder().setTitle("🖥️ Renzu OS").setDescription("`! <cmd>` for Live Terminal. Just type numbers to interact.")], 
+            components: getTerminalButtons() 
+        });
     }
 
     if (msg === '?status') {
-        let statusStr = "";
-        for (let id in terminals) {
-            statusStr += `**T${id}:** ${terminals[id].process ? '🔴 Busy' : '🟢 Idle'}\n`;
-        }
-        return message.reply(`📊 **System Status:**\n${statusStr}`);
+        let status = Object.keys(terminals).map(id => `T${id}: ${terminals[id].process ? '🔴' : '🟢'}`).join(' | ');
+        return message.reply(`📊 **Status:** ${status}\nActive: **T${activeId}**`);
     }
 
-    // 2. EXECUTION LOGIC (Live Fixed)
+    // 2. LIVE EXECUTION LOGIC
     if (msg.startsWith('!')) {
         const cmd = msg.startsWith('! ') ? msg.slice(2) : msg.slice(1);
         if (!cmd) return;
 
-        if (terminals[activeId].process) {
-            return message.reply(`⚠️ T${activeId} is busy. Use another terminal or kill it.`);
-        }
+        if (terminals[activeId].process) return message.reply(`T${activeId} is Busy!`);
 
         terminals[activeId].buffer = `> ${cmd}\n`;
-        terminals[activeId].lastSent = "";
         terminals[activeId].message = await message.reply({
-            content: `🖥️ **Terminal ${activeId} Starting...**\n\`\`\`bash\nInitializing Live Stream...\n\`\`\``,
+            content: `🖥️ **Live T${activeId}:**\n\`\`\`bash\nStarting...\n\`\`\``,
             components: getTerminalButtons()
         });
 
-        // FORCE PTYS/INTERACTIVE MODE
+        // Pseudo-TTY mode simulation for better progress bars
         terminals[activeId].process = spawn(cmd, { 
             shell: true, 
-            env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1' } 
+            env: { ...process.env, TERM: 'xterm', FORCE_COLOR: 'true' } 
         });
 
-        const updateUI = () => {
-            const currentTerminal = terminals[activeId];
-            if (!currentTerminal.message) return;
-
-            const cleanOutput = stripAnsi(currentTerminal.buffer).slice(-1900);
+        const updateTerminal = async () => {
+            let current = terminals[activeId];
+            if (!current.message) return;
             
-            // Only update if output changed to avoid Discord rate limits
-            if (cleanOutput !== currentTerminal.lastSent && cleanOutput.trim() !== "") {
-                currentTerminal.lastSent = cleanOutput;
-                currentTerminal.message.edit({
-                    content: `🖥️ **Live T${activeId}:**\n\`\`\`bash\n${cleanOutput}\n\`\`\``,
+            let display = stripAnsi(current.buffer).slice(-1900);
+            if (display !== current.lastSent && display.length > 0) {
+                current.lastSent = display;
+                await current.message.edit({
+                    content: `🖥️ **Live T${activeId}:**\n\`\`\`bash\n${display}\n\`\`\``,
                     components: getTerminalButtons()
                 }).catch(() => {});
             }
         };
 
-        // Faster refresh for "Live" feel
-        const interval = setInterval(updateUI, 1500);
-
+        // Stream from both stdout and stderr (important for git/progress)
         terminals[activeId].process.stdout.on('data', (d) => { terminals[activeId].buffer += d.toString(); });
         terminals[activeId].process.stderr.on('data', (d) => { terminals[activeId].buffer += d.toString(); });
 
+        const streamInterval = setInterval(updateTerminal, 1500);
+
         terminals[activeId].process.on('close', (code) => {
-            clearInterval(interval);
-            setTimeout(updateUI, 500); // Final update
-            message.channel.send(`🏁 **T${activeId} Exited** (Code: ${code})`);
+            clearInterval(streamInterval);
+            setTimeout(updateTerminal, 500);
+            message.channel.send(`🏁 **T${activeId} Finished** (Code: ${code})`);
             terminals[activeId].process = null;
         });
         return;
     }
 
-    // 3. INTERACTIVE INPUT
+    // 3. INTERACTIVE INPUT (Bina prefix ke kaam karega)
     if (terminals[activeId].process && !msg.startsWith('?')) {
         terminals[activeId].process.stdin.write(msg + '\n');
-        return message.react('📩');
+        return message.react('✅');
     }
 });
 
-// --- BUTTON INTERACTION ---
 client.on('interactionCreate', async (i) => {
     if (!i.isButton()) return;
-    const id = i.customId;
-
-    if (id.startsWith('sw_')) {
-        activeId = parseInt(id.split('_')[1]);
-        await i.update({ 
-            content: `🔄 Switched to **Terminal ${activeId}**\n${terminals[activeId].process ? '🔵 Active' : '🟢 Idle'}`, 
-            components: getTerminalButtons() 
-        });
-    }
-
-    if (id === 'kill_term' && terminals[activeId].process) {
+    if (i.customId.startsWith('sw_')) {
+        activeId = parseInt(i.customId.split('_')[1]);
+        await i.update({ content: `🔄 Focus: **Terminal ${activeId}**`, components: getTerminalButtons() });
+    } else if (i.customId === 'kill_term' && terminals[activeId].process) {
         terminals[activeId].process.kill();
-        terminals[activeId].process = null;
-        await i.update({ content: `🛑 **T${activeId} Process Killed.**`, components: getTerminalButtons() });
-    }
-
-    if (id === 'clear_term') {
+        await i.reply({ content: `🛑 T${activeId} Killed`, ephemeral: true });
+    } else if (i.customId === 'clear_term') {
         terminals[activeId].buffer = "";
-        terminals[activeId].lastSent = "";
-        await i.update({ content: `🧹 **T${activeId} Cleared.**`, components: getTerminalButtons() });
+        await i.update({ content: `🧹 T${activeId} Cleared`, components: getTerminalButtons() });
     }
 });
 
