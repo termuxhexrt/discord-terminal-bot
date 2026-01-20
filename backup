@@ -1,6 +1,7 @@
 const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
 const { spawn } = require('child_process');
 const express = require('express');
+const path = require('path'); // Added for path resolution
 require('dotenv').config();
 
 const app = express();
@@ -10,6 +11,9 @@ app.listen(process.env.PORT || 3000);
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
+
+// --- PERSISTENCE SETUP ---
+let currentDir = process.cwd(); // Tracks global directory across commands
 
 let terminals = {
     1: { process: null, buffer: "", message: null, lastSent: "" },
@@ -49,14 +53,27 @@ client.on('messageCreate', async (message) => {
 
     if (msg === '?status') {
         let status = Object.keys(terminals).map(id => `T${id}: ${terminals[id].process ? '🔴' : '🟢'}`).join(' | ');
-        return message.reply(`📊 **System:** ${status}\nFocus: **Terminal ${activeId}**`);
+        return message.reply(`📊 **System:** ${status}\nFocus: **Terminal ${activeId}**\n📁 **Dir:** \`${currentDir}\``);
     }
 
     if (msg.startsWith('!')) {
         let cmd = msg.startsWith('! ') ? msg.slice(2) : msg.slice(1);
         if (!cmd) return;
 
-        // FORCE PROGRESS FIX: Agar git clone hai toh --progress add karo
+        // --- CD COMMAND PERSISTENCE FIX ---
+        if (cmd.startsWith('cd ')) {
+            const targetDir = cmd.slice(3).trim();
+            try {
+                const newPath = path.resolve(currentDir, targetDir);
+                process.chdir(newPath); // Actual directory change
+                currentDir = process.cwd(); // Update tracker
+                return message.reply(`📂 **Directory Changed:** \`${currentDir}\``);
+            } catch (err) {
+                return message.reply(`❌ **Error:** Directory not found!`);
+            }
+        }
+
+        // FORCE PROGRESS FIX
         if (cmd.includes('git clone') && !cmd.includes('--progress')) {
             cmd = cmd.replace('git clone', 'git clone --progress');
         }
@@ -69,9 +86,10 @@ client.on('messageCreate', async (message) => {
             components: getTerminalButtons()
         });
 
-        // Use 'stdbuf' to disable buffering and make it truly real-time
+        // Run command with persistence (cwd: currentDir)
         terminals[activeId].process = spawn(`stdbuf -oL -eL ${cmd}`, { 
-            shell: true, 
+            shell: true,
+            cwd: currentDir, // <--- This keeps the folder persistent
             env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1', LANG: 'en_US.UTF-8' } 
         });
 
@@ -89,7 +107,7 @@ client.on('messageCreate', async (message) => {
             }
         };
 
-        const streamInterval = setInterval(updateUI, 1200); // 1.2s update for smoothness
+        const streamInterval = setInterval(updateUI, 1200);
 
         terminals[activeId].process.stdout.on('data', (d) => { terminals[activeId].buffer += d.toString(); });
         terminals[activeId].process.stderr.on('data', (d) => { terminals[activeId].buffer += d.toString(); });
