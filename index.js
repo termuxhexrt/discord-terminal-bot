@@ -3,16 +3,14 @@ const { spawn } = require('child_process');
 const express = require('express');
 require('dotenv').config();
 
-// --- SERVER ---
 const app = express();
-app.get('/', (req, res) => res.send('Renzu Live Terminal Active 🚀'));
+app.get('/', (req, res) => res.send('Renzu Ultra-Live OS 🚀'));
 app.listen(process.env.PORT || 3000);
 
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
-// --- MULTI-TERMINAL SYSTEM ---
 let terminals = {
     1: { process: null, buffer: "", message: null, lastSent: "" },
     2: { process: null, buffer: "", message: null, lastSent: "" },
@@ -42,68 +40,69 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const msg = message.content.trim();
 
-    // 1. HELP & STATUS
     if (msg === '?help') {
         return message.reply({ 
-            embeds: [new EmbedBuilder().setTitle("🖥️ Renzu OS").setDescription("`! <cmd>` for Live Terminal. Just type numbers to interact.")], 
+            embeds: [new EmbedBuilder().setTitle("🖥️ Renzu OS - Ultra Live").setDescription("`! <cmd>` for Live Stream. Interaction is direct.")], 
             components: getTerminalButtons() 
         });
     }
 
     if (msg === '?status') {
         let status = Object.keys(terminals).map(id => `T${id}: ${terminals[id].process ? '🔴' : '🟢'}`).join(' | ');
-        return message.reply(`📊 **Status:** ${status}\nActive: **T${activeId}**`);
+        return message.reply(`📊 **System:** ${status}\nFocus: **Terminal ${activeId}**`);
     }
 
-    // 2. LIVE EXECUTION LOGIC
     if (msg.startsWith('!')) {
-        const cmd = msg.startsWith('! ') ? msg.slice(2) : msg.slice(1);
+        let cmd = msg.startsWith('! ') ? msg.slice(2) : msg.slice(1);
         if (!cmd) return;
 
-        if (terminals[activeId].process) return message.reply(`T${activeId} is Busy!`);
+        // FORCE PROGRESS FIX: Agar git clone hai toh --progress add karo
+        if (cmd.includes('git clone') && !cmd.includes('--progress')) {
+            cmd = cmd.replace('git clone', 'git clone --progress');
+        }
+
+        if (terminals[activeId].process) return message.reply(`⚠️ T${activeId} is busy!`);
 
         terminals[activeId].buffer = `> ${cmd}\n`;
         terminals[activeId].message = await message.reply({
-            content: `🖥️ **Live T${activeId}:**\n\`\`\`bash\nStarting...\n\`\`\``,
+            content: `🖥️ **Ultra-Live T${activeId}:**\n\`\`\`bash\nConnecting to Stream...\n\`\`\``,
             components: getTerminalButtons()
         });
 
-        // Pseudo-TTY mode simulation for better progress bars
-        terminals[activeId].process = spawn(cmd, { 
+        // Use 'stdbuf' to disable buffering and make it truly real-time
+        terminals[activeId].process = spawn(`stdbuf -oL -eL ${cmd}`, { 
             shell: true, 
-            env: { ...process.env, TERM: 'xterm', FORCE_COLOR: 'true' } 
+            env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1', LANG: 'en_US.UTF-8' } 
         });
 
-        const updateTerminal = async () => {
-            let current = terminals[activeId];
-            if (!current.message) return;
+        const updateUI = async () => {
+            let t = terminals[activeId];
+            if (!t.message) return;
             
-            let display = stripAnsi(current.buffer).slice(-1900);
-            if (display !== current.lastSent && display.length > 0) {
-                current.lastSent = display;
-                await current.message.edit({
-                    content: `🖥️ **Live T${activeId}:**\n\`\`\`bash\n${display}\n\`\`\``,
+            let output = stripAnsi(t.buffer).slice(-1900);
+            if (output !== t.lastSent && output.length > 0) {
+                t.lastSent = output;
+                await t.message.edit({
+                    content: `🖥️ **Live Stream T${activeId}:**\n\`\`\`bash\n${output}\n\`\`\``,
                     components: getTerminalButtons()
                 }).catch(() => {});
             }
         };
 
-        // Stream from both stdout and stderr (important for git/progress)
+        const streamInterval = setInterval(updateUI, 1200); // 1.2s update for smoothness
+
         terminals[activeId].process.stdout.on('data', (d) => { terminals[activeId].buffer += d.toString(); });
         terminals[activeId].process.stderr.on('data', (d) => { terminals[activeId].buffer += d.toString(); });
 
-        const streamInterval = setInterval(updateTerminal, 1500);
-
         terminals[activeId].process.on('close', (code) => {
             clearInterval(streamInterval);
-            setTimeout(updateTerminal, 500);
-            message.channel.send(`🏁 **T${activeId} Finished** (Code: ${code})`);
+            setTimeout(updateUI, 500);
+            message.channel.send(`🏁 **T${activeId} Execution Finished.**`);
             terminals[activeId].process = null;
         });
         return;
     }
 
-    // 3. INTERACTIVE INPUT (Bina prefix ke kaam karega)
     if (terminals[activeId].process && !msg.startsWith('?')) {
         terminals[activeId].process.stdin.write(msg + '\n');
         return message.react('✅');
@@ -114,13 +113,14 @@ client.on('interactionCreate', async (i) => {
     if (!i.isButton()) return;
     if (i.customId.startsWith('sw_')) {
         activeId = parseInt(i.customId.split('_')[1]);
-        await i.update({ content: `🔄 Focus: **Terminal ${activeId}**`, components: getTerminalButtons() });
+        await i.update({ content: `🔄 Focus Switched: **Terminal ${activeId}**`, components: getTerminalButtons() });
     } else if (i.customId === 'kill_term' && terminals[activeId].process) {
         terminals[activeId].process.kill();
-        await i.reply({ content: `🛑 T${activeId} Killed`, ephemeral: true });
+        terminals[activeId].process = null;
+        await i.update({ content: `🛑 T${activeId} Killed`, components: getTerminalButtons() });
     } else if (i.customId === 'clear_term') {
         terminals[activeId].buffer = "";
-        await i.update({ content: `🧹 T${activeId} Cleared`, components: getTerminalButtons() });
+        await i.update({ content: `🧹 T${activeId} Buffer Cleared`, components: getTerminalButtons() });
     }
 });
 
