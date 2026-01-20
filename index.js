@@ -5,44 +5,30 @@ const express = require('express');
 const https = require('https'); 
 require('dotenv').config();
 
-// --- EXPRESS SERVER ---
 const app = express();
 const port = process.env.PORT || 3000;
 app.get('/', (req, res) => res.send('Renzu OS is alive!'));
 app.listen(port, () => console.log(`Server on port ${port}`));
 
-// --- STEALTH SETUP ---
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 
 const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates]
 });
 
 const PUBLIC_DIR = '/app/storage/public_root';
-const USER_DATA_DIR = '/app/storage/user_data'; // Cookies yahan save hongi
+const USER_DATA_DIR = '/app/storage/user_data';
 
-// Directories creation
 [PUBLIC_DIR, USER_DATA_DIR].forEach(dir => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-let activeProcess = null, currentBrowser = null, currentPage = null;
+let activeProcess = null, currentBrowser = null, currentPage = null, isStreaming = false;
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
-function getPublicIP() {
-    return new Promise((resolve) => {
-        https.get('https://api.ipify.org', (res) => {
-            let data = '';
-            res.on('data', (chunk) => data += chunk);
-            res.on('end', () => resolve(data));
-        }).on('error', () => resolve('Unknown'));
-    });
-}
-
-// --- SMART TAGS LOGIC ---
 async function applySmartTags(page) {
     try {
         await page.waitForSelector('body', { timeout: 5000 }).catch(() => {});
@@ -52,7 +38,7 @@ async function applySmartTags(page) {
             let idCounter = 1;
             const tagDoc = (doc, offsetX = 0, offsetY = 0) => {
                 if (!doc || !doc.querySelectorAll) return;
-                const selectors = 'button, input, a, [role="button"], textarea, [role="checkbox"], li, [role="option"]';
+                const selectors = 'button, input, a, [role="button"], textarea, li';
                 Array.from(doc.querySelectorAll(selectors)).forEach(el => {
                     const rect = el.getBoundingClientRect();
                     if (rect.width > 2 && rect.height > 2 && window.getComputedStyle(el).visibility !== 'hidden') {
@@ -69,14 +55,8 @@ async function applySmartTags(page) {
                 });
             };
             tagDoc(document);
-            document.querySelectorAll('iframe').forEach(iframe => {
-                try {
-                    const rect = iframe.getBoundingClientRect();
-                    tagDoc(iframe.contentDocument, rect.left, rect.top);
-                } catch (e) {}
-            });
         });
-    } catch (err) { console.log("Smart Tags Error:", err.message); }
+    } catch (err) { console.log("Tags Error:", err.message); }
 }
 
 async function captureAndSend(message, url = null, interaction = null) {
@@ -85,12 +65,8 @@ async function captureAndSend(message, url = null, interaction = null) {
             currentBrowser = await puppeteer.launch({ 
                 executablePath: '/usr/bin/chromium',
                 headless: "new",
-                userDataDir: USER_DATA_DIR, // Persistence added!
-                args: [
-                    '--no-sandbox', 
-                    '--disable-setuid-sandbox', 
-                    '--disable-blink-features=AutomationControlled'
-                ] 
+                userDataDir: USER_DATA_DIR,
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage'] 
             });
             const pages = await currentBrowser.pages();
             currentPage = pages.length > 0 ? pages[0] : await currentBrowser.newPage();
@@ -110,7 +86,8 @@ async function captureAndSend(message, url = null, interaction = null) {
             new ButtonBuilder().setCustomId('go_back_btn').setLabel('⬅️ Back').setStyle(ButtonStyle.Primary)
         );
         const row2 = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('backspace_key').setLabel('⌫ BS').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('yt_play').setLabel('⏯️ Play/Pause').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('yt_f').setLabel('📺 Fullscreen').setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId('close_browser').setLabel('🛑 Stop').setStyle(ButtonStyle.Danger)
         );
 
@@ -122,8 +99,6 @@ async function captureAndSend(message, url = null, interaction = null) {
         if (fs.existsSync(path)) setTimeout(() => fs.unlinkSync(path), 5000);
     } catch (err) {
         console.error(err);
-        const msg = interaction || message;
-        if (msg) msg.channel.send(`❌ **Error:** ${err.message}`);
     }
 }
 
@@ -131,7 +106,6 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const msg = message.content.trim();
 
-    // TERMINAL
     if (msg.startsWith('!')) {
         const cmd = msg.slice(1);
         const live = await message.reply("⚡ **Executing...**");
@@ -145,15 +119,22 @@ client.on('messageCreate', async (message) => {
         activeProcess.stderr.on('data', d => buffer += d.toString());
         activeProcess.on('close', (code) => {
             clearInterval(intv);
-            live.edit(`\`\`\`bash\n${stripAnsi(buffer).slice(-1900)}\n\`\`\`\n**Exit Code:** ${code}`).catch(() => {});
+            live.edit(`\`\`\`bash\n${stripAnsi(buffer).slice(-1900)}\n\`\`\`\n**Code:** ${code}`).catch(() => {});
             activeProcess = null;
         });
         return;
     }
 
-    if (msg.toLowerCase() === '?status') {
-        const ip = await getPublicIP();
-        return message.reply(`🌐 **IP:** \`${ip}\` | 🟢 **Status:** Online`);
+    if (msg.toLowerCase() === '?stream') {
+        if (!currentPage) return message.reply("🚨 Pehle `?screenshot [url]` chala bhai!");
+        isStreaming = !isStreaming;
+        message.reply(isStreaming ? "📺 **Streaming ON** (Updating every 3s)" : "📺 **Streaming OFF**");
+        
+        const streamLoop = setInterval(async () => {
+            if (!isStreaming) return clearInterval(streamLoop);
+            await captureAndSend(message);
+        }, 3000);
+        return;
     }
 
     if (currentPage && !msg.startsWith('?')) {
@@ -183,7 +164,10 @@ client.on('interactionCreate', async interaction => {
     if (interaction.customId === 'scroll_up') await currentPage.evaluate(() => window.scrollBy(0, -500));
     if (interaction.customId === 'press_enter') await currentPage.keyboard.press('Enter');
     if (interaction.customId === 'go_back_btn') await currentPage.goBack();
+    if (interaction.customId === 'yt_play') await currentPage.keyboard.press('k');
+    if (interaction.customId === 'yt_f') await currentPage.keyboard.press('f');
     if (interaction.customId === 'close_browser') {
+        isStreaming = false;
         if (currentBrowser) await currentBrowser.close();
         currentBrowser = null; currentPage = null;
         return interaction.followUp("🛑 Stopped.");
