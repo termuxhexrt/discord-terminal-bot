@@ -1,10 +1,17 @@
 const { Client, GatewayIntentBits, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
 const { spawn } = require('child_process');
 const fs = require('fs');
-const os = require('os');
+const express = require('express');
 const https = require('https'); 
 require('dotenv').config();
 
+// --- EXPRESS SERVER FOR RAILWAY ---
+const app = express();
+const port = process.env.PORT || 3000;
+app.get('/', (req, res) => res.send('Renzu OS is running!'));
+app.listen(port, () => console.log(`Express server listening on port ${port}`));
+
+// --- STEALTH BYPASS SETUP ---
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
@@ -15,6 +22,9 @@ const client = new Client({
 
 const PUBLIC_DIR = '/app/storage/public_root';
 let activeProcess = null, currentBrowser = null, currentPage = null;
+
+// Ensure directory exists on startup
+if (!fs.existsSync(PUBLIC_DIR)) fs.mkdirSync(PUBLIC_DIR, { recursive: true });
 
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
@@ -31,20 +41,15 @@ function getPublicIP() {
 // --- ERROR-PROOF SMART TAGS ---
 async function applySmartTags(page) {
     try {
-        // Wait for body to be available to avoid "context destroyed" error
         await page.waitForSelector('body', { timeout: 5000 }).catch(() => {});
-        
         await page.evaluate(async () => {
             document.querySelectorAll('.renzu-tag').forEach(el => el.remove());
             window.renzuElements = [];
             let idCounter = 1;
-
             const tagDoc = (doc, offsetX = 0, offsetY = 0) => {
                 if (!doc || !doc.querySelectorAll) return;
                 const selectors = 'button, input, a, [role="button"], textarea, [role="checkbox"], li, [role="option"]';
-                const elements = Array.from(doc.querySelectorAll(selectors));
-                
-                elements.forEach(el => {
+                Array.from(doc.querySelectorAll(selectors)).forEach(el => {
                     const rect = el.getBoundingClientRect();
                     if (rect.width > 2 && rect.height > 2 && window.getComputedStyle(el).visibility !== 'hidden') {
                         const id = idCounter++;
@@ -55,12 +60,10 @@ async function applySmartTags(page) {
                             padding: 0px 2px; z-index: 2147483647; font-size: 11px; border-radius: 2px; pointer-events: none;`;
                         tag.innerText = id;
                         doc.body.appendChild(tag);
-                        
                         window.renzuElements.push({ id, x: rect.left + rect.width/2 + offsetX, y: rect.top + rect.height/2 + offsetY });
                     }
                 });
             };
-
             tagDoc(document);
             document.querySelectorAll('iframe').forEach(iframe => {
                 try {
@@ -69,9 +72,7 @@ async function applySmartTags(page) {
                 } catch (e) {}
             });
         });
-    } catch (err) {
-        console.log("Smart Tags Error (Likely Navigation):", err.message);
-    }
+    } catch (err) { console.log("Smart Tags Error:", err.message); }
 }
 
 async function captureAndSend(message, url = null, interaction = null) {
@@ -85,20 +86,11 @@ async function captureAndSend(message, url = null, interaction = null) {
             currentPage = await currentBrowser.newPage();
             await currentPage.setViewport({ width: 1280, height: 720 });
         }
-        
-        if (url) {
-            const targetUrl = url.startsWith('http') ? url : `https://${url}`;
-            // Use networkidle0 for heavy sites like Google
-            await currentPage.goto(targetUrl, { waitUntil: 'networkidle0', timeout: 60000 });
-        }
-
+        if (url) await currentPage.goto(url.startsWith('http') ? url : `https://${url}`, { waitUntil: 'networkidle0', timeout: 60000 });
         await applySmartTags(currentPage);
         const path = `${PUBLIC_DIR}/smart_${Date.now()}.png`;
         await currentPage.screenshot({ path });
-        
-        // Clean up tags BEFORE sending to Discord
         await currentPage.evaluate(() => document.querySelectorAll('.renzu-tag').forEach(el => el.remove())).catch(() => {});
-
         const row1 = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('scroll_up').setLabel('⬆️').setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId('scroll_down').setLabel('⬇️').setStyle(ButtonStyle.Secondary),
@@ -110,22 +102,13 @@ async function captureAndSend(message, url = null, interaction = null) {
             new ButtonBuilder().setCustomId('clear_input').setLabel('✂️ Cut').setStyle(ButtonStyle.Danger),
             new ButtonBuilder().setCustomId('close_browser').setLabel('🛑 Stop').setStyle(ButtonStyle.Danger)
         );
-
-        const payload = { 
-            content: `🌐 **URL:** \`${await currentPage.url()}\``, 
-            files: [new AttachmentBuilder(path)], 
-            components: [row1, row2] 
-        };
-        
+        const payload = { content: `🌐 **URL:** \`${await currentPage.url()}\``, files: [new AttachmentBuilder(path)], components: [row1, row2] };
         if (interaction) await interaction.editReply(payload);
         else if (message) await message.reply(payload);
-        
         if (fs.existsSync(path)) setTimeout(() => fs.unlinkSync(path), 5000);
-    } catch (err) { 
+    } catch (err) {
         console.error(err);
-        const errMsg = `❌ **Error:** ${err.message}`;
-        if (interaction) await interaction.editReply({ content: errMsg, components: [] }).catch(() => {});
-        else if (message) await message.reply(errMsg).catch(() => {});
+        if (message) message.reply(`❌ **Error:** ${err.message}`);
     }
 }
 
@@ -133,21 +116,46 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const msg = message.content.trim();
 
+    // --- TERMINAL LOGIC FIX ---
+    if (msg.startsWith('!')) {
+        const cmd = msg.slice(1);
+        const live = await message.reply("⚡ **Executing Command...**");
+        let buffer = "";
+
+        if (activeProcess) activeProcess.kill();
+        
+        // Using shell: true and correct environment for output stream
+        activeProcess = spawn(cmd, { shell: true, cwd: PUBLIC_DIR, env: { ...process.env, TERM: 'xterm-256color' } });
+
+        const updateUI = () => {
+            if (buffer.trim()) {
+                live.edit(`\`\`\`bash\n${stripAnsi(buffer).slice(-1900)}\n\`\`\``).catch(() => {});
+            }
+        };
+
+        const intv = setInterval(updateUI, 2000);
+
+        activeProcess.stdout.on('data', d => { buffer += d.toString(); });
+        activeProcess.stderr.on('data', d => { buffer += d.toString(); });
+        
+        activeProcess.on('close', (code) => {
+            clearInterval(intv);
+            setTimeout(() => {
+                const finalOutput = buffer.trim() ? `\`\`\`bash\n${stripAnsi(buffer).slice(-1900)}\n\`\`\`` : "✅ Command executed (No output returned).";
+                live.edit(`${finalOutput}\n**Exit Code:** ${code}`).catch(() => {});
+                activeProcess = null;
+            }, 1000);
+        });
+        return;
+    }
+
     if (msg.toLowerCase() === '?status') {
         const ip = await getPublicIP();
-        const mem = process.memoryUsage();
-        const embed = new EmbedBuilder()
-            .setTitle('📊 Renzu OS Status')
-            .setColor(0x00AE86)
-            .addFields(
-                { name: '🌐 IP', value: `\`${ip}\``, inline: true },
-                { name: '💾 RAM', value: `${(mem.heapUsed / 1024 / 1024).toFixed(2)}MB`, inline: true },
-                { name: '⏱️ Uptime', value: `${Math.floor(process.uptime())}s`, inline: true }
-            );
+        const embed = new EmbedBuilder().setTitle('📊 Status').addFields({ name: '🌐 IP', value: `\`${ip}\``, inline: true }).setColor(0x00AE86);
         return message.reply({ embeds: [embed] });
     }
 
-    if (currentPage && !msg.startsWith('!') && !msg.startsWith('?')) {
+    if (currentPage && !msg.startsWith('?')) {
         if (/^\d+$/.test(msg)) {
             const coords = await currentPage.evaluate((id) => {
                 const found = window.renzuElements ? window.renzuElements.find(e => e.id === id) : null;
@@ -162,53 +170,25 @@ client.on('messageCreate', async (message) => {
         return setTimeout(() => captureAndSend(message), 1000);
     }
 
-    if (msg.toLowerCase().startsWith('?screenshot')) {
-        const url = msg.split(' ')[1];
-        await captureAndSend(message, url);
-    }
-
-    if (msg.startsWith('!')) {
-        const cmd = msg.slice(1);
-        const live = await message.reply("⚡ Executing...");
-        activeProcess = spawn('/bin/bash', ['-c', cmd], { cwd: PUBLIC_DIR });
-        let buffer = "";
-        const intv = setInterval(() => { 
-            if(buffer) live.edit(`\`\`\`\n${stripAnsi(buffer).slice(-1900)}\n\`\`\``).catch(()=>{}); 
-        }, 2500);
-        activeProcess.on('close', () => { clearInterval(intv); activeProcess = null; });
-        activeProcess.stdout.on('data', d => buffer += d);
-        activeProcess.stderr.on('data', d => buffer += d);
-    }
+    if (msg.toLowerCase().startsWith('?screenshot')) await captureAndSend(message, msg.split(' ')[1]);
 });
 
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
     await interaction.deferUpdate();
-    
     if (!currentPage) return interaction.followUp({ content: "❌ Session expired.", ephemeral: true });
 
-    if (interaction.customId === 'scroll_down') await currentPage.evaluate(() => window.scrollBy(0, 500)).catch(() => {});
-    if (interaction.customId === 'scroll_up') await currentPage.evaluate(() => window.scrollBy(0, -500)).catch(() => {});
-    if (interaction.customId === 'press_enter') await currentPage.keyboard.press('Enter').catch(() => {});
-    if (interaction.customId === 'go_back_btn') await currentPage.goBack().catch(() => {});
-    if (interaction.customId === 'backspace_key') await currentPage.keyboard.press('Backspace').catch(() => {});
-    if (interaction.customId === 'clear_input') {
-        await currentPage.keyboard.down('Control');
-        await currentPage.keyboard.press('a');
-        await currentPage.keyboard.up('Control');
-        await currentPage.keyboard.press('Backspace');
-    }
+    if (interaction.customId === 'scroll_down') await currentPage.evaluate(() => window.scrollBy(0, 500));
+    if (interaction.customId === 'scroll_up') await currentPage.evaluate(() => window.scrollBy(0, -500));
+    if (interaction.customId === 'press_enter') await currentPage.keyboard.press('Enter');
+    if (interaction.customId === 'go_back_btn') await currentPage.goBack();
     if (interaction.customId === 'close_browser') {
-        if (currentBrowser) {
-            await currentBrowser.close().catch(() => {});
-            currentBrowser = null; currentPage = null;
-        }
+        if (currentBrowser) await currentBrowser.close();
+        currentBrowser = null; currentPage = null;
         return interaction.followUp("🛑 Stopped.");
     }
     await captureAndSend(null, null, interaction);
 });
 
-// CRASH PREVENTION: Handle unhandled rejections
-process.on('unhandledRejection', error => console.error('Unhandled promise rejection:', error));
-
+process.on('unhandledRejection', error => console.error('Unhandled Promise Rejection:', error));
 client.login(process.env.TOKEN);
