@@ -2,7 +2,7 @@ const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle,
 const { spawn } = require('child_process');
 const express = require('express');
 const path = require('path');
-const fs = require('fs'); // File System added for permanent storage
+const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
@@ -13,27 +13,28 @@ const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
-// --- PERMANENT STORAGE LOGIC ---
-const STATE_FILE = path.join(__dirname, 'state.json');
-
+// --- REAL STORAGE LOGIC ---
+const STATE_FILE = './state.json';
 let state = {
     currentDir: process.cwd(),
     activeId: 1,
     buffers: { 1: "", 2: "", 3: "", 4: "" }
 };
 
-// Load saved data on startup
+// Load saved data immediately
 if (fs.existsSync(STATE_FILE)) {
     try {
-        const data = JSON.parse(fs.readFileSync(STATE_FILE));
+        const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
         state = { ...state, ...data };
-        process.chdir(state.currentDir);
-    } catch (e) { console.log("State load error, using defaults."); }
+        if (fs.existsSync(state.currentDir)) {
+            process.chdir(state.currentDir);
+        }
+    } catch (e) { console.error("Load Error:", e); }
 }
 
 function saveState() {
     fs.writeFileSync(STATE_FILE, JSON.stringify({
-        currentDir: state.currentDir,
+        currentDir: process.cwd(),
         activeId: state.activeId,
         buffers: state.buffers
     }, null, 2));
@@ -67,79 +68,57 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const msg = message.content.trim();
 
-    if (msg === '?help') {
-        return message.reply({ 
-            embeds: [new EmbedBuilder().setTitle("🖥️ Renzu OS - Persistent").setDescription("`! <cmd>` for Live Stream. Settings are saved permanently.")], 
-            components: getTerminalButtons() 
-        });
-    }
-
     if (msg === '?status') {
-        let status = Object.keys(terminals).map(id => `T${id}: ${terminals[id].process ? '🔴' : '🟢'}`).join(' | ');
-        return message.reply(`📊 **System:** ${status}\nFocus: **Terminal ${state.activeId}**\n📁 **Saved Dir:** \`${state.currentDir}\``);
+        return message.reply(`📊 **T${state.activeId} Focused** | 📁 **Dir:** \`${process.cwd()}\``);
     }
 
     if (msg.startsWith('!')) {
         let cmd = msg.startsWith('! ') ? msg.slice(2) : msg.slice(1);
-        if (!cmd) return;
-
-        // --- PERSISTENT CD FIX ---
+        
+        // CD persistence logic
         if (cmd.startsWith('cd ')) {
             const target = cmd.slice(3).trim();
             try {
-                const newPath = path.resolve(state.currentDir, target);
-                process.chdir(newPath);
-                state.currentDir = process.cwd();
-                saveState(); // Folder yaad rakhega
-                return message.reply(`📂 **Directory Saved:** \`${state.currentDir}\``);
+                process.chdir(path.resolve(process.cwd(), target));
+                saveState();
+                return message.reply(`📂 Switched to: \`${process.cwd()}\``);
             } catch (err) {
-                return message.reply(`❌ **Error:** Folder not found.`);
+                return message.reply(`❌ Folder not found! Current: \`${process.cwd()}\``);
             }
         }
 
-        if (cmd.includes('git clone') && !cmd.includes('--progress')) {
-            cmd = cmd.replace('git clone', 'git clone --progress');
-        }
-
-        if (terminals[state.activeId].process) return message.reply(`⚠️ T${state.activeId} busy!`);
+        if (terminals[state.activeId].process) return message.reply("Terminal busy!");
 
         state.buffers[state.activeId] = `> ${cmd}\n`;
         terminals[state.activeId].message = await message.reply({
-            content: `🖥️ **Persistent T${state.activeId}:**\n\`\`\`bash\nStreaming Live...\n\`\`\``,
+            content: `🖥️ **Persistent T${state.activeId}:**\n\`\`\`bash\nExecuting...\n\`\`\``,
             components: getTerminalButtons()
         });
 
         terminals[state.activeId].process = spawn(`stdbuf -oL -eL ${cmd}`, { 
-            shell: true,
-            cwd: state.currentDir,
-            env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1', LANG: 'en_US.UTF-8' } 
+            shell: true, 
+            cwd: process.cwd(), 
+            env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1' } 
         });
 
         const updateUI = async () => {
-            let active = state.activeId;
-            let t = terminals[active];
-            if (!t.message) return;
-            
-            let output = stripAnsi(state.buffers[active]).slice(-1900);
-            if (output !== t.lastSent && output.length > 0) {
-                t.lastSent = output;
-                await t.message.edit({
-                    content: `🖥️ **Live Stream T${active}:**\n\`\`\`bash\n${output}\n\`\`\``,
-                    components: getTerminalButtons()
-                }).catch(() => {});
+            let id = state.activeId;
+            let output = stripAnsi(state.buffers[id]).slice(-1900);
+            if (output && output !== terminals[id].lastSent) {
+                terminals[id].lastSent = output;
+                await terminals[id].message.edit(`🖥️ **Live T${id}:**\n\`\`\`bash\n${output}\n\`\`\``).catch(() => {});
             }
         };
 
-        const streamInterval = setInterval(updateUI, 1200);
+        const interval = setInterval(updateUI, 1200);
 
         terminals[state.activeId].process.stdout.on('data', (d) => { state.buffers[state.activeId] += d.toString(); });
         terminals[state.activeId].process.stderr.on('data', (d) => { state.buffers[state.activeId] += d.toString(); });
 
         terminals[state.activeId].process.on('close', (code) => {
-            clearInterval(streamInterval);
-            saveState(); // Save buffer on finish
-            setTimeout(updateUI, 500);
-            message.channel.send(`🏁 **T${state.activeId} Done.** (Dir: \`${path.basename(state.currentDir)}\`)`);
+            clearInterval(interval);
+            saveState();
+            message.channel.send(`🏁 T${state.activeId} Finished (Code: ${code})`);
             terminals[state.activeId].process = null;
         });
         return;
@@ -153,20 +132,18 @@ client.on('messageCreate', async (message) => {
 
 client.on('interactionCreate', async (i) => {
     if (!i.isButton()) return;
-    const bid = i.customId;
-
-    if (bid.startsWith('sw_')) {
-        state.activeId = parseInt(bid.split('_')[1]);
+    if (i.customId.startsWith('sw_')) {
+        state.activeId = parseInt(i.customId.split('_')[1]);
         saveState();
-        await i.update({ content: `🔄 Focus: **Terminal ${state.activeId}**`, components: getTerminalButtons() });
-    } else if (bid === 'kill_term' && terminals[state.activeId].process) {
+        await i.update({ content: `🔄 Focus: **T${state.activeId}**`, components: getTerminalButtons() });
+    } else if (i.customId === 'kill_term' && terminals[state.activeId].process) {
         terminals[state.activeId].process.kill();
         terminals[state.activeId].process = null;
         await i.update({ content: `🛑 T${state.activeId} Killed`, components: getTerminalButtons() });
-    } else if (bid === 'clear_term') {
+    } else if (i.customId === 'clear_term') {
         state.buffers[state.activeId] = "";
         saveState();
-        await i.update({ content: `🧹 T${state.activeId} Screen Cleared`, components: getTerminalButtons() });
+        await i.update({ content: `🧹 T${state.activeId} Cleared`, components: getTerminalButtons() });
     }
 });
 
