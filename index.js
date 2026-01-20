@@ -78,11 +78,17 @@ async function applySmartTags(page) {
 async function captureAndSend(message, url = null, interaction = null) {
     try {
         if (!currentBrowser) {
-            currentBrowser = await puppeteer.launch({ 
-                executablePath: '/usr/bin/chromium',
-                headless: "new",
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled', '--incognito'] 
-            });
+           currentBrowser = await puppeteer.launch({ 
+    executablePath: '/usr/bin/chromium',
+    headless: "new",
+    userDataDir: './user_data_dir', // <--- Ye line cookies save karegi
+    args: [
+        '--no-sandbox', 
+        '--disable-setuid-sandbox', 
+        '--disable-blink-features=AutomationControlled',
+        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+    ] 
+});
             currentPage = await currentBrowser.newPage();
             await currentPage.setViewport({ width: 1280, height: 720 });
         }
