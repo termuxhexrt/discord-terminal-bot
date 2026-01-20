@@ -1,17 +1,24 @@
 {
-  "name": "discord-terminal-bot",
+  "name": "renzu-os-bot",
   "version": "1.0.0",
-  "description": "Discord bot with terminal and browser capabilities",
+  "description": "Discord bot with Puppeteer and Voice Streaming",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "discord.js": "^14.14.1",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
     "puppeteer": "^21.6.1",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "@discordjs/voice": "^0.16.1",
+    "@discordjs/opus": "^0.9.0",
+    "libsodium-wrappers": "^0.7.13",
+    "ffmpeg-static": "^5.2.0"
+  },
+  "engines": {
+    "node": "18.x"
   }
 }
