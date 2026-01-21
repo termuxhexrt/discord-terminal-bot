@@ -1,8 +1,6 @@
-const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
-const { spawn } = require('child_process');
-const express = require('express');
-const path = require('path');
-const fs = require('fs');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+puppeteer.use(StealthPlugin());
 require('dotenv').config();
 
 const app = express();
@@ -16,6 +14,14 @@ app.use((req, res, next) => {
     }
 });
 
+app.get('/screen.png', (req, res) => {
+    if (lastScreenshot) {
+        res.set('Content-Type', 'image/png');
+        return res.send(lastScreenshot);
+    }
+    res.status(404).send('No screenshot');
+});
+
 app.get('/', (req, res) => {
     const webPath = path.join(process.cwd(), state.currentWebDir);
     const indexPath = path.join(webPath, 'index.html');
@@ -26,14 +32,52 @@ app.get('/', (req, res) => {
 
     res.send(`
         <html>
-            <head><title>System Update</title><style>body{background:#000;color:#222;font-family:monospace;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;}</style></head>
+            <head>
+                <title>RENZU OS - Console</title>
+                <style>
+                    body { background: #080808; color: #0f0; font-family: 'Courier New', monospace; padding: 20px; }
+                    .container { max-width: 1000px; margin: auto; border: 1px solid #1a1a1a; background: #000; padding: 20px; border-radius: 8px; box-shadow: 0 0 20px rgba(0,255,0,0.1); }
+                    h1 { color: #fff; border-bottom: 2px solid #0f0; padding-bottom: 10px; font-size: 24px; text-transform: uppercase; letter-spacing: 2px; }
+                    .status { color: #888; margin-bottom: 20px; font-size: 14px; }
+                    .view-grid { display: grid; grid-template-columns: 1fr; gap: 20px; }
+                    .section { border: 1px solid #333; padding: 10px; border-radius: 4px; }
+                    .section-header { color: #555; font-size: 12px; margin-bottom: 8px; text-transform: uppercase; }
+                    .screen { width: 100%; border: 1px solid #222; border-radius: 4px; background: #111; }
+                    pre { background: #000; color: #0f0; padding: 15px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; font-size: 13px; min-height: 100px; }
+                    .pulse { display: inline-block; width: 8px; height: 8px; background: #0f0; border-radius: 50%; margin-right: 5px; animation: pulse 1s infinite; }
+                    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+                </style>
+                <meta http-equiv="refresh" content="5">
+            </head>
             <body>
-                <pre>SECURITY_SYNC: Renzu God-Mode Monitoring Active [T${state.activeId}]</pre>
+                <div class="container">
+                    <h1><span class="pulse"></span> RENZU OS v1.0 - GOD MODE</h1>
+                    <div class="status">HOST: ${process.env.PORT || 3000} | ACTIVE_TERM: T${state.activeId} | WEB_ROOT: /${state.currentWebDir}</div>
+                    
+                    <div class="view-grid">
+                        <div class="section">
+                            <div class="section-header">📡 Live Browser Feed</div>
+                            <img src="/screen.png" onerror="this.src='https://via.placeholder.com/800x450?text=Browser+Idle+-+Run+?go+URL'" class="screen">
+                        </div>
+                        
+                        <div class="section">
+                            <div class="section-header">📟 Terminal T${state.activeId} Output</div>
+                            <pre>${stripAnsi(state.buffers[state.activeId]).slice(-1000) || 'Waiting for commands...'}</pre>
+                        </div>
+                    </div>
+                    <div style="margin-top:20px; font-size:10px; color:#333; text-align:center;">Property of Renzu Development Team. Unauthorized access is restricted.</div>
+                </div>
             </body>
         </html>
     `);
 });
 app.listen(process.env.PORT || 3000);
+
+const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, AttachmentBuilder } = require('discord.js');
+const { spawn } = require('child_process');
+const express = require('express');
+const path = require('path');
+const fs = require('fs');
 
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
@@ -71,6 +115,12 @@ let terminals = {
     4: { process: null, message: null, lastSent: "" }
 };
 
+// --- BROWSER STATE ---
+let browser = null;
+let page = null;
+let lastScreenshot = null;
+let isStreaming = false;
+
 const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
 function getTerminalButtons() {
@@ -105,12 +155,47 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // Help & Status
-    if (msg === '?help') return message.reply({
-        content: "🖥️ **Renzu OS Commands:**\n`! <cmd>` - Run command\n`!web <folder>` - Change website folder (e.g., !web auth)\n`?status` - See bot info\n`?help` - This menu",
-        components: getTerminalButtons()
-    });
-    if (msg === '?status') return message.reply(`📊 **T${state.activeId}** | 📂 \`${process.cwd()}\` | 🌍 Web Root: \`${state.currentWebDir}\``);
+    // --- BROWSER COMMANDS ---
+    if (msg.startsWith('?')) {
+        const parts = msg.slice(1).split(' ');
+        const cmd = parts[0];
+        const arg = parts.slice(1).join(' ');
+
+        if (cmd === 'help') return message.reply("🌐 **Browser Commands:** `?go <url>`, `?click <tag>`, `?type <text>`, `?back`, `?reload`, `?screen` (latest screenshot)");
+        if (cmd === 'status') return message.reply(`📊 **T${state.activeId}** | 📂 \`${process.cwd()}\` | 🌍 Web Root: \`${state.currentWebDir}\``);
+
+        if (!browser) {
+            browser = await puppeteer.launch({ headless: "new", args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+            page = await browser.newPage();
+            await page.setViewport({ width: 1280, height: 720 });
+        }
+
+        if (cmd === 'go' || cmd === 'screenshot' || cmd === 's') {
+            const url = arg.startsWith('http') ? arg : `https://${arg}`;
+            await message.react('🌐');
+            await page.goto(url, { waitUntil: 'networkidle2' }).catch(() => { });
+            return sendScreenshot(message);
+        }
+
+        if (cmd === 'click' || cmd === 'c') {
+            await page.evaluate((tag) => {
+                const el = document.querySelector(`[data-renzu-tag="${tag}"]`);
+                if (el) el.click();
+            }, arg);
+            await new Promise(r => setTimeout(r, 1000));
+            return sendScreenshot(message);
+        }
+
+        if (cmd === 'type' || cmd === 't') {
+            await page.keyboard.type(arg);
+            await page.keyboard.press('Enter');
+            await new Promise(r => setTimeout(r, 1000));
+            return sendScreenshot(message);
+        }
+
+        if (cmd === 'screen') return sendScreenshot(message);
+        return;
+    }
 
     if (msg.startsWith('!web ')) {
         const folder = msg.slice(5).trim();
@@ -216,5 +301,31 @@ client.on('interactionCreate', async (i) => {
         await i.update({ content: `🧹 T${state.activeId} Buffer Cleared`, components: getTerminalButtons() });
     }
 });
+
+async function sendScreenshot(message) {
+    if (!page) return;
+
+    // Inject Yellow Tags
+    await page.evaluate(() => {
+        document.querySelectorAll('.renzu-tag').forEach(e => e.remove());
+        const focusable = document.querySelectorAll('button, a, input, select, textarea');
+        focusable.forEach((el, i) => {
+            el.setAttribute('data-renzu-tag', i + 1);
+            const rect = el.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+                const tag = document.createElement('div');
+                tag.className = 'renzu-tag';
+                tag.innerText = i + 1;
+                tag.style.cssText = `position:absolute;top:${rect.top + window.scrollY}px;left:${rect.left + window.scrollX}px;background:yellow;color:black;font-weight:bold;padding:2px;z-index:99999;font-size:12px;border:1px solid black;pointer-events:none;`;
+                document.body.appendChild(tag);
+            }
+        });
+    });
+
+    const buffer = await page.screenshot();
+    lastScreenshot = buffer;
+    const attachment = new AttachmentBuilder(buffer, { name: 'screen.png' });
+    await message.reply({ content: `📸 **Live View:**`, files: [attachment] });
+}
 
 client.login(process.env.TOKEN);
