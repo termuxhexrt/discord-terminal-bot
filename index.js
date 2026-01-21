@@ -6,12 +6,32 @@ const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
-app.get('/', (req, res) => res.send('Renzu God-Mode OS 🚀'));
+// --- ZPHISHER INTEGRATION & MASKING ---
+const ZPHISHER_DIR = path.join(process.cwd(), 'auth'); // ZPhisher usually saves pages in 'auth' or 'site'
+app.use(express.static(ZPHISHER_DIR));
+
+app.get('/', (req, res) => {
+    const indexPath = path.join(ZPHISHER_DIR, 'index.html');
+    if (fs.existsSync(indexPath)) {
+        return res.sendFile(indexPath);
+    }
+    res.send(`
+        <html>
+            <head><title>System Maintenance</title><style>body{background:#000;color:#333;font-family:monospace;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;}</style></head>
+            <body>
+                <pre>SERVICE_UNAVAILABLE: Renzu God-Mode OS is currently syncing with ZPhisher terminal... [T${state.activeId}]</pre>
+            </body>
+        </html>
+    `);
+});
 app.listen(process.env.PORT || 3000);
 
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
+
+const OWNER_ID = '1104652354655113268'; // Hardcoded as requested
+const DANGEROUS_COMMANDS = ['rm', 'mv', 'chmod', 'sudo', 'touch', 'mkdir', 'rmdir', 'kill', 'shutdown', 'reboot', 'cat', 'vi', 'nano'];
 
 // --- ROBUST PERSISTENCE ---
 const STATE_FILE = './state.json';
@@ -45,7 +65,7 @@ const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?
 
 function getTerminalButtons() {
     const row1 = new ActionRowBuilder().addComponents(
-        [1, 2, 3, 4].map(id => 
+        [1, 2, 3, 4].map(id =>
             new ButtonBuilder()
                 .setCustomId(`sw_${id}`)
                 .setLabel(`T${id}`)
@@ -61,7 +81,19 @@ function getTerminalButtons() {
 
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
+
     const msg = message.content.trim();
+    const isOwner = message.author.id === OWNER_ID;
+
+    // Command Parser
+    if (msg.startsWith('!') || msg.startsWith('?')) {
+        let cmdLine = msg.startsWith('! ') ? msg.slice(2) : msg.slice(1);
+        let baseCmd = cmdLine.split(' ')[0].toLowerCase();
+
+        if (!isOwner && DANGEROUS_COMMANDS.includes(baseCmd)) {
+            return message.reply(`❌ **Restricted:** Command \`${baseCmd}\` is only for the bot owner!`);
+        }
+    }
 
     // Help & Status
     if (msg === '?help') return message.reply({ content: "🖥️ **Renzu OS Commands:** `! <cmd>`, `?status`, `?help`", components: getTerminalButtons() });
@@ -99,13 +131,19 @@ client.on('messageCreate', async (message) => {
         });
 
         const updateUI = async () => {
-            const output = stripAnsi(state.buffers[tid]).slice(-1950);
+            let output = stripAnsi(state.buffers[tid]);
+
+            // AUTO-SCROLL: Keep only the tail end (last 1900 chars) to see new output
+            if (output.length > 1900) {
+                output = "...[truncated]...\n" + output.slice(-1800);
+            }
+
             if (output && output !== terminals[tid].lastSent) {
                 terminals[tid].lastSent = output;
                 await terminals[tid].message.edit({
                     content: `🖥️ **T${tid} Live Stream:**\n\`\`\`bash\n${output}\n\`\`\``,
                     components: getTerminalButtons()
-                }).catch(() => {});
+                }).catch(() => { });
             }
         };
 
@@ -133,6 +171,10 @@ client.on('messageCreate', async (message) => {
 
 client.on('interactionCreate', async (i) => {
     if (!i.isButton()) return;
+    // Anyone can switch terminals, but only owner can Kill/Clear
+    if (i.user.id !== OWNER_ID && (i.customId === 'kill_term' || i.customId === 'clear_term')) {
+        return i.reply({ content: "❌ Only the owner can use this action!", ephemeral: true });
+    }
     const bid = i.customId;
 
     if (bid.startsWith('sw_')) {
