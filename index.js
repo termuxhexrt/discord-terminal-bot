@@ -226,9 +226,16 @@ client.on('messageCreate', async (message) => {
         }
 
         if (cmd === 'go' || cmd === 'screenshot' || cmd === 's') {
-            const url = arg.startsWith('http') ? arg : `https://${arg}`;
+            let url = arg;
+            if (!url.startsWith('http')) {
+                if (url.includes('localhost') || url.includes('127.0.0.1')) {
+                    url = `http://${url}`;
+                } else {
+                    url = `https://${url}`;
+                }
+            }
             await message.react('🌐').catch(() => { });
-            await page.goto(url, { waitUntil: 'networkidle2' }).catch(() => { });
+            await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 }).catch(e => console.log("Navigation error:", e.message));
             return sendScreenshot(message);
         }
 
@@ -374,6 +381,9 @@ client.on('interactionCreate', async (i) => {
 async function sendScreenshot(message) {
     if (!page) return;
     try {
+        // Wait a bit to ensure context is stable
+        await new Promise(r => setTimeout(r, 500));
+
         await page.evaluate(() => {
             document.querySelectorAll('.renzu-tag').forEach(e => e.remove());
             const focusable = document.querySelectorAll('button, a, input, select, textarea');
@@ -388,8 +398,15 @@ async function sendScreenshot(message) {
                     document.body.appendChild(tag);
                 }
             });
+        }).catch(e => {
+            if (!e.message.includes('Execution context was destroyed')) {
+                throw e;
+            }
         });
-        const buffer = await page.screenshot();
+
+        const buffer = await page.screenshot().catch(() => null);
+        if (!buffer) return;
+
         lastScreenshot = buffer;
         const attachment = new AttachmentBuilder(buffer, { name: 'screen.png' });
 
@@ -406,7 +423,7 @@ async function sendScreenshot(message) {
         }
     } catch (e) {
         console.error('Screenshot error:', e);
-        message.reply('❌ Browser screenshot failed!').catch(() => { });
+        if (message && message.reply) message.reply('❌ Browser screenshot failed!').catch(() => { });
     }
 }
 
