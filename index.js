@@ -1,9 +1,21 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, AttachmentBuilder } = require('discord.js');
+const { spawn } = require('child_process');
+const express = require('express');
+const path = require('path');
+const fs = require('fs');
+
 puppeteer.use(StealthPlugin());
 require('dotenv').config();
 
 const app = express();
+
+// --- BROWSER STATE ---
+let browser = null;
+let page = null;
+let lastScreenshot = null;
+let isStreaming = false;
 
 // --- STATE & PERSISTENCE ---
 const STATE_FILE = './state.json';
@@ -11,15 +23,17 @@ let state = {
     currentDir: process.cwd(),
     activeId: 1,
     manualWebDir: null, // User override (!host)
-    buffers: { 1: "", 2: "", 3: "" }
+    buffers: { 1: "", 2: "", 3: "", 4: "" }
 };
+
 if (fs.existsSync(STATE_FILE)) {
     try {
         const saved = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
         state = { ...state, ...saved };
         if (fs.existsSync(state.currentDir)) process.chdir(state.currentDir);
-    } catch (e) { console.log("State Reset"); }
+    } catch (e) { console.log("⚠️ State Reset caused by error or missing file."); }
 }
+
 function saveState() {
     state.currentDir = process.cwd();
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
@@ -43,7 +57,9 @@ function getSmartWebRoot() {
     return null;
 }
 
-// --- DYNAMIC WEB HOSTING ---
+const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
+
+// --- EXPRESS SERVER ---
 app.use((req, res, next) => {
     const webRoot = getSmartWebRoot();
     if (webRoot) {
@@ -63,7 +79,6 @@ app.get('/screen.png', (req, res) => {
 
 app.get('/', (req, res) => {
     const webPath = getSmartWebRoot();
-
     if (webPath) {
         const indexPath = path.join(webPath, 'index.html');
         if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
@@ -81,7 +96,6 @@ app.get('/', (req, res) => {
         }
     }
 
-    // Fallback: Show OS Dashboard
     res.send(`
         <html>
             <head>
@@ -105,55 +119,30 @@ app.get('/', (req, res) => {
                 <div class="container">
                     <h1><span class="pulse"></span> RENZU OS v1.0 - GOD MODE</h1>
                     <div class="status">HOST: ${process.env.PORT || 3000} | ACTIVE_TERM: T${state.activeId} | WEB_ROOT: ${getSmartWebRoot() ? path.basename(getSmartWebRoot()) : 'AUTO'}</div>
-                    
                     <div class="view-grid">
                         <div class="section">
                             <div class="section-header">📡 Live Browser Feed</div>
                             <img src="/screen.png" onerror="this.src='https://via.placeholder.com/800x450?text=Browser+Idle+-+Run+?go+URL'" class="screen">
                         </div>
-                        
                         <div class="section">
                             <div class="section-header">📟 Terminal T${state.activeId} Output</div>
-                            <pre>${stripAnsi(state.buffers[state.activeId]).slice(-1000) || 'Waiting for commands...'}</pre>
+                            <pre>${stripAnsi(state.buffers[state.activeId] || '').slice(-1000) || 'Waiting for commands...'}</pre>
                         </div>
                     </div>
-                    <div style="margin-top:20px; font-size:10px; color:#333; text-align:center;">Property of Renzu Development Team. Unauthorized access is restricted.</div>
                 </div>
             </body>
         </html>
     `);
 });
-app.listen(process.env.PORT || 3000);
+app.listen(process.env.PORT || 3000, () => console.log('🚀 Web Server running on port', process.env.PORT || 3000));
 
-const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, AttachmentBuilder } = require('discord.js');
-const { spawn } = require('child_process');
-const express = require('express');
-const path = require('path');
-const fs = require('fs');
-
+// --- DISCORD CLIENT ---
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
-const OWNER_ID = '1104652354655113268'; // Hardcoded as requested
+const OWNER_ID = '1104652354655113268';
 const DANGEROUS_COMMANDS = ['rm', 'mv', 'chmod', 'sudo', 'touch', 'mkdir', 'rmdir', 'kill', 'shutdown', 'reboot', 'cat', 'vi', 'nano'];
-
-// State already initialized at top
-
-let terminals = {
-    1: { process: null, message: null, lastSent: "" },
-    2: { process: null, message: null, lastSent: "" },
-    3: { process: null, message: null, lastSent: "" },
-    4: { process: null, message: null, lastSent: "" }
-};
-
-// --- BROWSER STATE ---
-let browser = null;
-let page = null;
-let lastScreenshot = null;
-let isStreaming = false;
-
-const stripAnsi = (text) => text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 
 function getTerminalButtons() {
     const row1 = new ActionRowBuilder().addComponents(
@@ -174,29 +163,33 @@ function getTerminalButtons() {
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
-    const msg = message.content.trim();
     const isOwner = message.author.id === OWNER_ID;
+    const msg = message.content.trim();
 
-    // Command Parser
+    // Log messages for debugging
+    console.log(`[MSG] ${message.author.username} (${message.author.id}): ${msg}`);
+
+    // Command Check
     if (msg.startsWith('!') || msg.startsWith('?')) {
-        let cmdLine = msg.startsWith('! ') ? msg.slice(2) : msg.slice(1);
+        let cmdLine = msg.startsWith('! ') ? msg.slice(2) : (msg.startsWith('?') ? msg.slice(1) : msg.slice(1));
         let baseCmd = cmdLine.split(' ')[0].toLowerCase();
 
         if (!isOwner && DANGEROUS_COMMANDS.includes(baseCmd)) {
-            return message.reply(`❌ **Restricted:** Command \`${baseCmd}\` is only for the bot owner!`);
+            return message.reply(`❌ **Security Alert:** Only the bot owner can use dangerous commands!`).catch(() => { });
         }
     }
 
     // --- BROWSER COMMANDS ---
     if (msg.startsWith('?')) {
         const parts = msg.slice(1).split(' ');
-        const cmd = parts[0];
+        const cmd = parts[0].toLowerCase();
         const arg = parts.slice(1).join(' ');
 
-        if (cmd === 'help') return message.reply("🌐 **Browser Commands:** `?go <url>`, `?click <tag>`, `?type <text>`, `?back`, `?reload`, `?screen` (latest screenshot)");
-        if (cmd === 'status') return message.reply(`📊 **T${state.activeId}** | 📂 \`${process.cwd()}\` | 🌍 Web Root: \`${state.currentWebDir}\``);
+        if (cmd === 'help') return message.reply("🌐 **Browser Commands:** `?go <url>`, `?click <tag>`, `?type <text>`, `?back`, `?reload`, `?screen`").catch(() => { });
+        if (cmd === 'status') return message.reply(`📊 **T${state.activeId}** | 📂 \`${process.cwd()}\` | 🌍 Web Root: \`${getSmartWebRoot() ? path.basename(getSmartWebRoot()) : 'AUTO'}\``).catch(() => { });
 
         if (!browser) {
+            console.log('启动浏览器...');
             browser = await puppeteer.launch({ headless: "new", args: ['--no-sandbox', '--disable-setuid-sandbox'] });
             page = await browser.newPage();
             await page.setViewport({ width: 1280, height: 720 });
@@ -204,7 +197,7 @@ client.on('messageCreate', async (message) => {
 
         if (cmd === 'go' || cmd === 'screenshot' || cmd === 's') {
             const url = arg.startsWith('http') ? arg : `https://${arg}`;
-            await message.react('🌐');
+            await message.react('🌐').catch(() => { });
             await page.goto(url, { waitUntil: 'networkidle2' }).catch(() => { });
             return sendScreenshot(message);
         }
@@ -226,46 +219,46 @@ client.on('messageCreate', async (message) => {
         }
 
         if (cmd === 'screen') return sendScreenshot(message);
-        return;
     }
 
+    // --- HOSTING COMMAND ---
     if (msg.startsWith('!host ')) {
         const folder = msg.slice(6).trim();
         const fullPath = path.join(process.cwd(), folder);
-        if (fs.existsSync(fullPath)) {
-            state.manualWebDir = folder;
-            saveState();
-            return message.reply(`✅ **Web Root Overridden:** Website is now hosting files from \`/${folder}\``);
-        } else {
-            return message.reply(`❌ **Error:** Folder \`${folder}\` not found!`);
+        if (isOwner) {
+            if (fs.existsSync(fullPath)) {
+                state.manualWebDir = folder;
+                saveState();
+                return message.reply(`✅ **Web Root Overridden:** Website is now hosting files from \`/${folder}\``).catch(() => { });
+            }
+            return message.reply(`❌ **Error:** Folder \`${folder}\` not found!`).catch(() => { });
         }
+        return message.reply(`❌ Only owner can change web host!`).catch(() => { });
     }
 
+    // --- TERMINAL COMMANDS ---
     if (msg.startsWith('!')) {
         let cmd = msg.startsWith('! ') ? msg.slice(2) : msg.slice(1);
         if (!cmd) return;
 
-        // CD PERSISTENCE
         if (cmd.startsWith('cd ')) {
             try {
                 const newPath = path.resolve(process.cwd(), cmd.slice(3).trim());
                 process.chdir(newPath);
                 saveState();
-                return message.reply(`📂 **Directory:** \`${process.cwd()}\``);
-            } catch (e) { return message.reply("❌ Folder not found!"); }
+                return message.reply(`📂 **Directory:** \`${process.cwd()}\``).catch(() => { });
+            } catch (e) { return message.reply("❌ Folder not found!").catch(() => { }); }
         }
 
         const tid = state.activeId;
-        if (terminals[tid].process) return message.reply(`⚠️ T${tid} is already running a process!`);
+        if (terminals[tid].process) return message.reply(`⚠️ T${tid} is already running a process!`).catch(() => { });
 
-        // Start Execution
         state.buffers[tid] = `> ${cmd}\n`;
         terminals[tid].message = await message.reply({
             content: `🖥️ **T${tid} Live Stream:**\n\`\`\`bash\nInitializing...\n\`\`\``,
             components: getTerminalButtons()
         });
 
-        // Use stdbuf for EVERYTHING to ensure no "Executing..." hang
         terminals[tid].process = spawn(`stdbuf -oL -eL ${cmd}`, {
             shell: true,
             cwd: process.cwd(),
@@ -273,12 +266,8 @@ client.on('messageCreate', async (message) => {
         });
 
         const updateUI = async () => {
-            let output = stripAnsi(state.buffers[tid]);
-
-            // AUTO-SCROLL: Keep only the tail end (last 1900 chars) to see new output
-            if (output.length > 1900) {
-                output = "...[truncated]...\n" + output.slice(-1800);
-            }
+            let output = stripAnsi(state.buffers[tid] || '');
+            if (output.length > 1900) output = "...[truncated]...\n" + output.slice(-1800);
 
             if (output && output !== terminals[tid].lastSent) {
                 terminals[tid].lastSent = output;
@@ -297,23 +286,22 @@ client.on('messageCreate', async (message) => {
         terminals[tid].process.on('close', (code) => {
             clearInterval(timer);
             saveState();
-            setTimeout(updateUI, 500); // Final update
-            message.channel.send(`🏁 **T${tid} Execution Finished** (Code: ${code})`);
+            setTimeout(updateUI, 500);
+            message.channel.send(`🏁 **T${tid} Execution Finished** (Code: ${code})`).catch(() => { });
             terminals[tid].process = null;
         });
         return;
     }
 
-    // Direct Interaction
-    if (terminals[state.activeId].process && !msg.startsWith('?')) {
+    // --- INTERACTIVE INPUT ---
+    if (terminals[state.activeId].process && !msg.startsWith('!') && !msg.startsWith('?')) {
         terminals[state.activeId].process.stdin.write(msg + '\n');
-        return message.react('✅');
+        return message.react('✅').catch(() => { });
     }
 });
 
 client.on('interactionCreate', async (i) => {
     if (!i.isButton()) return;
-    // Anyone can switch terminals, but only owner can Kill/Clear
     if (i.user.id !== OWNER_ID && (i.customId === 'kill_term' || i.customId === 'clear_term')) {
         return i.reply({ content: "❌ Only the owner can use this action!", ephemeral: true });
     }
@@ -322,42 +310,45 @@ client.on('interactionCreate', async (i) => {
     if (bid.startsWith('sw_')) {
         state.activeId = parseInt(bid.split('_')[1]);
         saveState();
-        await i.update({ content: `🔄 Focus Switched: **T${state.activeId}**`, components: getTerminalButtons() });
+        await i.update({ content: `🔄 Focus Switched: **T${state.activeId}**`, components: getTerminalButtons() }).catch(() => { });
     } else if (bid === 'kill_term' && terminals[state.activeId].process) {
         terminals[state.activeId].process.kill('SIGKILL');
         terminals[state.activeId].process = null;
-        await i.update({ content: `🛑 T${state.activeId} Force Killed`, components: getTerminalButtons() });
+        await i.update({ content: `🛑 T${state.activeId} Force Killed`, components: getTerminalButtons() }).catch(() => { });
     } else if (bid === 'clear_term') {
         state.buffers[state.activeId] = "";
         saveState();
-        await i.update({ content: `🧹 T${state.activeId} Buffer Cleared`, components: getTerminalButtons() });
+        await i.update({ content: `🧹 T${state.activeId} Buffer Cleared`, components: getTerminalButtons() }).catch(() => { });
     }
 });
 
 async function sendScreenshot(message) {
     if (!page) return;
-
-    // Inject Yellow Tags
-    await page.evaluate(() => {
-        document.querySelectorAll('.renzu-tag').forEach(e => e.remove());
-        const focusable = document.querySelectorAll('button, a, input, select, textarea');
-        focusable.forEach((el, i) => {
-            el.setAttribute('data-renzu-tag', i + 1);
-            const rect = el.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0) {
-                const tag = document.createElement('div');
-                tag.className = 'renzu-tag';
-                tag.innerText = i + 1;
-                tag.style.cssText = `position:absolute;top:${rect.top + window.scrollY}px;left:${rect.left + window.scrollX}px;background:yellow;color:black;font-weight:bold;padding:2px;z-index:99999;font-size:12px;border:1px solid black;pointer-events:none;`;
-                document.body.appendChild(tag);
-            }
+    try {
+        await page.evaluate(() => {
+            document.querySelectorAll('.renzu-tag').forEach(e => e.remove());
+            const focusable = document.querySelectorAll('button, a, input, select, textarea');
+            focusable.forEach((el, i) => {
+                el.setAttribute('data-renzu-tag', i + 1);
+                const rect = el.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                    const tag = document.createElement('div');
+                    tag.className = 'renzu-tag';
+                    tag.innerText = i + 1;
+                    tag.style.cssText = `position:absolute;top:${rect.top + window.scrollY}px;left:${rect.left + window.scrollX}px;background:yellow;color:black;font-weight:bold;padding:2px;z-index:99999;font-size:12px;border:1px solid black;pointer-events:none;`;
+                    document.body.appendChild(tag);
+                }
+            });
         });
-    });
-
-    const buffer = await page.screenshot();
-    lastScreenshot = buffer;
-    const attachment = new AttachmentBuilder(buffer, { name: 'screen.png' });
-    await message.reply({ content: `📸 **Live View:**`, files: [attachment] });
+        const buffer = await page.screenshot();
+        lastScreenshot = buffer;
+        const attachment = new AttachmentBuilder(buffer, { name: 'screen.png' });
+        await message.reply({ content: `📸 **Live View:**`, files: [attachment] }).catch(() => { });
+    } catch (e) {
+        console.error('Screenshot error:', e);
+        message.reply('❌ Browser screenshot failed!').catch(() => { });
+    }
 }
 
+client.on('ready', () => console.log(`✅ Bot logged in as ${client.user.tag}`));
 client.login(process.env.TOKEN);
