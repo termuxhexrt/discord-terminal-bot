@@ -171,9 +171,11 @@ function getTerminalButtons() {
 
 function getBrowserButtons() {
     const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('br_screenshot').setLabel('📸 Screenshot').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('br_screenshot').setLabel('📸 Screen').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId('br_reload').setLabel('🔄 Reload').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('br_back').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId('br_back').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('br_home').setLabel('🏠 Home').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('br_kill').setLabel('🛑 Kill').setStyle(ButtonStyle.Danger)
     );
     return [row];
 }
@@ -209,9 +211,9 @@ client.on('messageCreate', async (message) => {
                 .setColor('#00ff00')
                 .setDescription('Universal Terminal & Stealth Browser Controller')
                 .addFields(
-                    { name: '📟 Terminal Commands', value: '`! <cmd>` - Run command in active terminal\n`!host <folder>` - Host a folder on web server\n`!cd <path>` - Change directory' },
-                    { name: '🌐 Browser Commands', value: '`?go <url>` - Open URL in stealth browser\n`?click <tag>` - Click element by yellow tag\n`?type <text>` - Type text into active element\n`?screen` - Get latest screenshot\n`?status` - Check environment status' },
-                    { name: '🖱️ UI Controls', value: 'Use **T1-T4** buttons to switch terminals.\nUse **Browser Buttons** to control live feed.' }
+                    { name: '📟 Terminal Commands', value: '`! <cmd>` - Run command in active terminal\n`!host <folder>` - Host a folder on web server\n`!cd <path>` - Change directory\n`!sys` - View system resources (RAM/CPU)' },
+                    { name: '🌐 Browser Commands', value: '`?go <url>` - Open URL in stealth browser\n`?click <tag>` - Click element by yellow tag\n`?type <text>` - Type text into active element\n`?screen` - Get latest screenshot\n`?js <code>` - Inject custom JavaScript' },
+                    { name: '🖱️ UI Controls', value: 'Use **T1-T4** buttons to switch terminals.\nUse **Browser Buttons** to control live feed or kill browser.' }
                 )
                 .setFooter({ text: 'Renzu OS v1.0 | Owner: God Mode' });
             return message.reply({ embeds: [embed] }).catch(() => { });
@@ -264,6 +266,10 @@ client.on('messageCreate', async (message) => {
             await page.reload().catch(() => { });
             return sendScreenshot(message);
         }
+        if (cmd === 'js') {
+            await page.evaluate(arg).catch(e => message.reply(`❌ JS Error: ${e.message}`));
+            return message.react('✅').catch(() => { });
+        }
     }
 
     // --- HOSTING COMMAND ---
@@ -279,6 +285,14 @@ client.on('messageCreate', async (message) => {
             return message.reply(`❌ **Error:** Folder \`${folder}\` not found!`).catch(() => { });
         }
         return message.reply(`❌ Only owner can change web host!`).catch(() => { });
+    }
+
+    if (msg.startsWith('!sys')) {
+        const os = require('os');
+        const freeRam = Math.round(os.freemem() / 1024 / 1024);
+        const totalRam = Math.round(os.totalmem() / 1024 / 1024);
+        const load = os.loadavg()[0].toFixed(2);
+        return message.reply(`🖥️ **System Status:**\n- **RAM:** ${totalRam - freeRam}/${totalRam} MB used\n- **CPU Load:** ${load}\n- **Uptime:** ${Math.round(os.uptime() / 3600)} hours`).catch(() => { });
     }
 
     // --- TERMINAL COMMANDS ---
@@ -375,6 +389,15 @@ client.on('interactionCreate', async (i) => {
         await i.deferUpdate();
         await page.goBack().catch(() => { });
         return sendScreenshot(i.message);
+    } else if (bid === 'br_home' && page) {
+        await i.deferUpdate();
+        await page.goto(`http://localhost:${PORT}`).catch(() => { });
+        return sendScreenshot(i.message);
+    } else if (bid === 'br_kill' && browser) {
+        await browser.close();
+        browser = null;
+        page = null;
+        await i.update({ content: `🛑 **Browser Force Closed.** Use \`?go\` to restart.`, components: [] }).catch(() => { });
     }
 });
 
