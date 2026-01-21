@@ -169,6 +169,15 @@ function getTerminalButtons() {
     return [row1, row2];
 }
 
+function getBrowserButtons() {
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('br_screenshot').setLabel('📸 Screenshot').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('br_reload').setLabel('🔄 Reload').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('br_back').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
+    );
+    return [row];
+}
+
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
@@ -194,7 +203,19 @@ client.on('messageCreate', async (message) => {
         const cmd = parts[0].toLowerCase();
         const arg = parts.slice(1).join(' ');
 
-        if (cmd === 'help') return message.reply("🌐 **Browser Commands:** `?go <url>`, `?click <tag>`, `?type <text>`, `?back`, `?reload`, `?screen`").catch(() => { });
+        if (cmd === 'help') {
+            const embed = new EmbedBuilder()
+                .setTitle('🚀 RENZU OS - GOD MODE HELP')
+                .setColor('#00ff00')
+                .setDescription('Universal Terminal & Stealth Browser Controller')
+                .addFields(
+                    { name: '📟 Terminal Commands', value: '`! <cmd>` - Run command in active terminal\n`!host <folder>` - Host a folder on web server\n`!cd <path>` - Change directory' },
+                    { name: '🌐 Browser Commands', value: '`?go <url>` - Open URL in stealth browser\n`?click <tag>` - Click element by yellow tag\n`?type <text>` - Type text into active element\n`?screen` - Get latest screenshot\n`?status` - Check environment status' },
+                    { name: '🖱️ UI Controls', value: 'Use **T1-T4** buttons to switch terminals.\nUse **Browser Buttons** to control live feed.' }
+                )
+                .setFooter({ text: 'Renzu OS v1.0 | Owner: God Mode' });
+            return message.reply({ embeds: [embed] }).catch(() => { });
+        }
         if (cmd === 'status') return message.reply(`📊 **T${state.activeId}** | 📂 \`${process.cwd()}\` | 🌍 Web Root: \`${getSmartWebRoot() ? path.basename(getSmartWebRoot()) : 'AUTO'}\``).catch(() => { });
 
         if (!browser) {
@@ -228,6 +249,14 @@ client.on('messageCreate', async (message) => {
         }
 
         if (cmd === 'screen') return sendScreenshot(message);
+        if (cmd === 'back') {
+            await page.goBack().catch(() => { });
+            return sendScreenshot(message);
+        }
+        if (cmd === 'reload') {
+            await page.reload().catch(() => { });
+            return sendScreenshot(message);
+        }
     }
 
     // --- HOSTING COMMAND ---
@@ -328,6 +357,17 @@ client.on('interactionCreate', async (i) => {
         state.buffers[state.activeId] = "";
         saveState();
         await i.update({ content: `🧹 T${state.activeId} Buffer Cleared`, components: getTerminalButtons() }).catch(() => { });
+    } else if (bid === 'br_screenshot' && page) {
+        await i.deferUpdate();
+        return sendScreenshot(i.message);
+    } else if (bid === 'br_reload' && page) {
+        await i.deferUpdate();
+        await page.reload().catch(() => { });
+        return sendScreenshot(i.message);
+    } else if (bid === 'br_back' && page) {
+        await i.deferUpdate();
+        await page.goBack().catch(() => { });
+        return sendScreenshot(i.message);
     }
 });
 
@@ -352,7 +392,18 @@ async function sendScreenshot(message) {
         const buffer = await page.screenshot();
         lastScreenshot = buffer;
         const attachment = new AttachmentBuilder(buffer, { name: 'screen.png' });
-        await message.reply({ content: `📸 **Live View:**`, files: [attachment] }).catch(() => { });
+
+        const payload = {
+            content: `📸 **Live View:**`,
+            files: [attachment],
+            components: getBrowserButtons()
+        };
+
+        if (message.edit && message.author.id === client.user.id) {
+            await message.edit(payload).catch(() => { });
+        } else {
+            await message.reply(payload).catch(() => { });
+        }
     } catch (e) {
         console.error('Screenshot error:', e);
         message.reply('❌ Browser screenshot failed!').catch(() => { });
