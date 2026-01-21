@@ -17,6 +17,14 @@ let page = null;
 let lastScreenshot = null;
 let isStreaming = false;
 
+// --- TERMINAL SESSIONS ---
+const terminals = {
+    1: { process: null, message: null, lastSent: "" },
+    2: { process: null, message: null, lastSent: "" },
+    3: { process: null, message: null, lastSent: "" },
+    4: { process: null, message: null, lastSent: "" }
+};
+
 // --- STATE & PERSISTENCE ---
 const STATE_FILE = './state.json';
 let state = {
